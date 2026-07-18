@@ -39,6 +39,15 @@
           <label>Value column<select id="valueColumn"></select></label>
           <label>How should duplicate postcodes be combined?<select id="aggregation"><option value="sum" selected>Sum</option><option value="avg">Average</option><option value="count">Count</option><option value="min">Minimum</option><option value="max">Maximum</option></select><small class="field-help">Rows with the same postcode will be combined using this method.</small></label>
           <label>Colour scale<select id="scaleMode"><option value="quantile">Quantiles</option><option value="linear">Equal intervals</option><option value="log">Logarithmic</option></select></label>
+          <fieldset class="format-controls"><legend>Value display</legend>
+            <label>Number format<select id="numberFormat"><option value="number">Number</option><option value="currency">Currency</option><option value="percentage">Percentage</option></select></label>
+            <label id="currencyField" class="hidden">Currency symbol<select id="currencySymbol"><option value="$">AUD $</option><option value="$">USD $</option><option value="£">GBP £</option><option value="€">EUR €</option><option value="custom">Custom</option></select></label>
+            <label id="customCurrencyField" class="hidden">Custom symbol<input id="customCurrencySymbol" value="$" maxlength="6" /></label>
+            <label>Decimal places<select id="decimalPlaces"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option></select></label>
+            <label class="toggle-label"><input id="compactNotation" type="checkbox" /> Compact notation <span>1,250,000 → 1.3M</span></label>
+            <label class="toggle-label"><input id="thousandsSeparator" type="checkbox" checked /> Thousands separators</label>
+            <small class="field-help">Percentage adds a % sign without changing the underlying value.</small>
+          </fieldset>
           <label>Map title<input id="mapTitle" value="Revenue by postcode" /></label>
           <section id="dataPreview" class="data-preview" aria-labelledby="previewTitle">
             <div class="preview-heading"><strong id="previewTitle">Data preview</strong><span>First 10 parsed rows</span></div>
@@ -72,6 +81,7 @@
         </div>
         <div id="map"></div>
         <div id="legend" class="legend hidden"></div>
+        <div id="pinnedDetail" class="pinned-detail hidden"><button id="closePinnedDetail" type="button" aria-label="Close postcode details">×</button><strong id="pinnedPostcode"></strong><span id="pinnedValue"></span></div>
         <div id="emptyState" class="empty-state"><div class="empty-map">AU</div><strong>Your heatmap will appear here</strong><span>Use a file with one postcode column and one numeric value column.</span></div>
       </section>
     </section>
