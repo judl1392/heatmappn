@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Postcode Heatmap Australia</title>
+  <meta name="description" content="Upload a CSV or Excel file and create an Australian postcode heatmap in your browser." />
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">▦</span><span>Postcode Heatmap</span><span class="beta">AU</span></div>
+    <a class="sample-link" href="sample/sample-postcode-revenue.csv" download>Download sample CSV</a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">FREE • PRIVATE • NO SIGN-UP</p>
+      <h1>Turn postcode data into a map.</h1>
+      <p class="subhead">Upload a CSV or Excel file. Your data stays in your browser.</p>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel controls">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload CSV or Excel file">
+          <input id="fileInput" type="file" accept=".csv,.xlsx,.xls" hidden />
+          <div class="upload-icon">⇧</div>
+          <strong>Drop your file here</strong>
+          <span>or click to browse</span>
+          <small>CSV, XLSX or XLS</small>
+        </div>
+
+        <div id="fileStatus" class="file-status hidden"></div>
+
+        <div id="mappingControls" class="mapping hidden">
+          <label>Postcode column<select id="postcodeColumn"></select></label>
+          <label>Value column<select id="valueColumn"></select></label>
+          <label>Aggregation<select id="aggregation"><option value="sum">Sum duplicates</option><option value="avg">Average duplicates</option><option value="max">Maximum</option><option value="count">Count rows</option></select></label>
+          <label>Colour scale<select id="scaleMode"><option value="quantile">Quantiles</option><option value="linear">Equal intervals</option><option value="log">Logarithmic</option></select></label>
+          <label>Map title<input id="mapTitle" value="Revenue by postcode" /></label>
+          <button id="buildButton" class="primary">Create heatmap</button>
+        </div>
+
+        <div id="summary" class="summary hidden"></div>
+        <div id="unmatchedPanel" class="unmatched hidden"><button id="downloadUnmatched">Download unmatched rows</button></div>
+      </aside>
+
+      <section class="map-card">
+        <div class="map-toolbar">
+          <div><strong id="displayTitle">Australian postcode heatmap</strong><span id="displaySubtitle">Upload data to begin</span></div>
+          <button id="exportButton" disabled>Export PNG</button>
+        </div>
+        <div id="map"></div>
+        <div id="legend" class="legend hidden"></div>
+        <div id="emptyState" class="empty-state"><div class="empty-map">AU</div><strong>Your heatmap will appear here</strong><span>Use a file with one postcode column and one numeric value column.</span></div>
+      </section>
+    </section>
+
+    <section class="how"><div><b>1</b><strong>Upload</strong><span>CSV or Excel</span></div><div><b>2</b><strong>Choose columns</strong><span>We auto-detect them</span></div><div><b>3</b><strong>Explore</strong><span>Hover and export</span></div></section>
+  </main>
+
+  <footer>Uses ABS Postal Areas 2021. Postal Areas approximate postcodes and are intended for statistical use.</footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
