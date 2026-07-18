@@ -40,11 +40,20 @@
           <label>Aggregation<select id="aggregation"><option value="sum">Sum duplicates</option><option value="avg">Average duplicates</option><option value="max">Maximum</option><option value="count">Count rows</option></select></label>
           <label>Colour scale<select id="scaleMode"><option value="quantile">Quantiles</option><option value="linear">Equal intervals</option><option value="log">Logarithmic</option></select></label>
           <label>Map title<input id="mapTitle" value="Revenue by postcode" /></label>
-          <button id="buildButton" class="primary">Create heatmap</button>
+          <section id="dataPreview" class="data-preview" aria-labelledby="previewTitle">
+            <div class="preview-heading"><strong id="previewTitle">Data preview</strong><span>First 10 parsed rows</span></div>
+            <div id="previewDetection" class="preview-detection"></div>
+            <div class="preview-scroll"><table><thead id="previewHead"></thead><tbody id="previewBody"></tbody></table></div>
+          </section>
+          <button id="buildButton" class="primary">Generate map</button>
         </div>
 
         <div id="summary" class="summary hidden"></div>
-        <div id="unmatchedPanel" class="unmatched hidden"><button id="downloadUnmatched">Download unmatched rows</button></div>
+        <section id="unmatchedPanel" class="unmatched hidden" aria-labelledby="unmatchedTitle">
+          <div class="preview-heading"><strong id="unmatchedTitle">Unmatched rows</strong><span id="unmatchedPreviewCount"></span></div>
+          <div class="preview-scroll"><table><thead id="unmatchedHead"></thead><tbody id="unmatchedBody"></tbody></table></div>
+          <button id="downloadUnmatched">Download unmatched rows</button>
+        </section>
       </aside>
 
       <section class="map-card">
