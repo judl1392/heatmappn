@@ -163,6 +163,52 @@ main {
   border-radius: 9px;
   padding: 11px;
 }
+.scale-controls {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 11px;
+}
+.scale-controls legend {
+  padding: 0 5px;
+  color: #46514c;
+  font-size: 12px;
+  font-weight: 750;
+}
+.scale-controls .toggle-label,
+.scale-warning {
+  grid-column: 1 / -1;
+}
+.scale-warning {
+  min-height: 1.4em;
+  color: #72501e;
+  font-size: 10px;
+  line-height: 1.4;
+}
+.presentation-controls {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 11px;
+}
+.presentation-controls legend {
+  padding: 0 5px;
+  color: #46514c;
+  font-size: 12px;
+  font-weight: 750;
+}
+.presentation-controls label:first-of-type,
+.presentation-controls label:last-of-type {
+  grid-column: 1 / -1;
+}
 .format-controls legend {
   padding: 0 5px;
   color: #46514c;
@@ -242,14 +288,14 @@ button:disabled {
   min-height: 680px;
 }
 .map-toolbar {
-  height: 72px;
+  min-height: 72px;
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 18px;
 }
-.map-toolbar div {
+.map-toolbar .map-heading {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -257,6 +303,10 @@ button:disabled {
 .map-toolbar span {
   font-size: 12px;
   color: var(--muted);
+}
+.map-toolbar small {
+  color: var(--muted);
+  font-size: 10px;
 }
 #map {
   height: 606px;
@@ -339,10 +389,30 @@ button:disabled {
   background: transparent;
   font-size: 18px;
 }
+.export-stage {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  z-index: -1;
+  background: #fff;
+  pointer-events: none;
+}
+.export-stage .map-card {
+  box-shadow: none;
+}
 .swatch {
   height: 11px;
   width: 20px;
   border-radius: 2px;
+}
+.legend-no-data {
+  margin-top: 7px;
+  border-top: 1px solid var(--line);
+  padding-top: 7px;
+}
+.legend-no-data .swatch {
+  border: 1px solid #a3ada8;
+  background: #dfe3e1;
 }
 .how {
   display: grid;
@@ -520,5 +590,18 @@ footer {
   .preview-scroll th,
   .preview-scroll td {
     max-width: 160px;
+  }
+  .presentation-controls {
+    grid-template-columns: 1fr;
+  }
+  .scale-controls {
+    grid-template-columns: 1fr;
+  }
+  .scale-controls label,
+  .scale-warning {
+    grid-column: 1;
+  }
+  .presentation-controls label {
+    grid-column: 1;
   }
 }

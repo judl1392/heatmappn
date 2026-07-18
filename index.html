@@ -38,7 +38,14 @@
           <label>Postcode column<select id="postcodeColumn"></select></label>
           <label>Value column<select id="valueColumn"></select></label>
           <label>How should duplicate postcodes be combined?<select id="aggregation"><option value="sum" selected>Sum</option><option value="avg">Average</option><option value="count">Count</option><option value="min">Minimum</option><option value="max">Maximum</option></select><small class="field-help">Rows with the same postcode will be combined using this method.</small></label>
-          <label>Colour scale<select id="scaleMode"><option value="quantile">Quantiles</option><option value="linear">Equal intervals</option><option value="log">Logarithmic</option></select></label>
+          <fieldset class="scale-controls"><legend>Colours and scale</legend>
+            <label>Scale method<select id="scaleMode"><option value="quantile" selected>Quantiles</option><option value="equal">Equal intervals</option><option value="continuous">Linear continuous</option><option value="log">Logarithmic</option><option value="diverging">Diverging</option></select></label>
+            <label>Colour palette<select id="paletteMode"><option value="blue">Blue</option><option value="green" selected>Green</option><option value="purple">Purple</option><option value="orange">Orange</option><option value="red">Red</option><option value="blue-red">Blue to red diverging</option><option value="colourblind">Colourblind-friendly</option></select></label>
+            <label id="classCountField">Number of classes<select id="classCount"><option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option><option>9</option></select></label>
+            <label id="divergingCentreField" class="hidden">Diverging centre<input id="divergingCentre" type="number" value="0" step="any" /></label>
+            <label class="toggle-label"><input id="reversePalette" type="checkbox" /> Reverse palette</label>
+            <div id="scaleWarning" class="scale-warning" aria-live="polite"></div>
+          </fieldset>
           <fieldset class="format-controls"><legend>Value display</legend>
             <label>Number format<select id="numberFormat"><option value="number">Number</option><option value="currency">Currency</option><option value="percentage">Percentage</option></select></label>
             <label id="currencyField" class="hidden">Currency symbol<select id="currencySymbol"><option value="$">AUD $</option><option value="$">USD $</option><option value="£">GBP £</option><option value="€">EUR €</option><option value="custom">Custom</option></select></label>
@@ -48,7 +55,12 @@
             <label class="toggle-label"><input id="thousandsSeparator" type="checkbox" checked /> Thousands separators</label>
             <small class="field-help">Percentage adds a % sign without changing the underlying value.</small>
           </fieldset>
-          <label>Map title<input id="mapTitle" value="Revenue by postcode" /></label>
+          <fieldset class="presentation-controls"><legend>Map presentation</legend>
+            <label>Map title<input id="mapTitle" value="Australian postcode heatmap" /></label>
+            <label>Subtitle<input id="mapSubtitle" value="" placeholder="Optional" /></label>
+            <label>Value label<input id="valueLabel" value="" placeholder="Uses selected value column" /></label>
+            <label>Source note<input id="sourceNote" value="" placeholder="Optional" /></label>
+          </fieldset>
           <section id="dataPreview" class="data-preview" aria-labelledby="previewTitle">
             <div class="preview-heading"><strong id="previewTitle">Data preview</strong><span>First 10 parsed rows</span></div>
             <div id="previewDetection" class="preview-detection"></div>
@@ -76,7 +88,7 @@
 
       <section class="map-card">
         <div class="map-toolbar">
-          <div><strong id="displayTitle">Australian postcode heatmap</strong><span id="displaySubtitle">Upload data to begin</span></div>
+          <div class="map-heading"><strong id="displayTitle">Australian postcode heatmap</strong><span id="displaySubtitle" class="hidden"></span><span id="displayMeta">Upload data to begin</span><small id="displaySource" class="hidden"></small></div>
           <button id="exportButton" disabled>Export PNG</button>
         </div>
         <div id="map"></div>
@@ -94,7 +106,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="https://unpkg.com/leaflet-image@0.4.0/leaflet-image.js"></script>
+  <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
