@@ -45,6 +45,15 @@
             <div id="previewDetection" class="preview-detection"></div>
             <div class="preview-scroll"><table><thead id="previewHead"></thead><tbody id="previewBody"></tbody></table></div>
           </section>
+          <section id="validationSummary" class="validation-summary" aria-labelledby="validationTitle">
+            <div class="preview-heading"><strong id="validationTitle">Validation summary</strong><span id="validationStatus"></span></div>
+            <dl id="validationMetrics" class="validation-metrics"></dl>
+            <div id="validationWarnings" class="validation-warnings" aria-live="polite"></div>
+            <div class="validation-downloads">
+              <button id="downloadInvalid" disabled>Download invalid rows</button>
+              <button id="downloadValidationUnmatched" disabled>Download unmatched rows</button>
+            </div>
+          </section>
           <button id="buildButton" class="primary">Generate map</button>
         </div>
 
