@@ -37,7 +37,7 @@
         <div id="mappingControls" class="mapping hidden">
           <label>Postcode column<select id="postcodeColumn"></select></label>
           <label>Value column<select id="valueColumn"></select></label>
-          <label>Aggregation<select id="aggregation"><option value="sum">Sum duplicates</option><option value="avg">Average duplicates</option><option value="max">Maximum</option><option value="count">Count rows</option></select></label>
+          <label>How should duplicate postcodes be combined?<select id="aggregation"><option value="sum" selected>Sum</option><option value="avg">Average</option><option value="count">Count</option><option value="min">Minimum</option><option value="max">Maximum</option></select><small class="field-help">Rows with the same postcode will be combined using this method.</small></label>
           <label>Colour scale<select id="scaleMode"><option value="quantile">Quantiles</option><option value="linear">Equal intervals</option><option value="log">Logarithmic</option></select></label>
           <label>Map title<input id="mapTitle" value="Revenue by postcode" /></label>
           <section id="dataPreview" class="data-preview" aria-labelledby="previewTitle">

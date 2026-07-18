@@ -148,6 +148,12 @@ main {
   font-weight: 700;
   color: #46514c;
 }
+.field-help {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.4;
+}
 .mapping select,
 .mapping input {
   width: 100%;
