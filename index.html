@@ -12,7 +12,6 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="mark">▦</span><span>Postcode Heatmap</span><span class="beta">AU</span></div>
-    <a class="sample-link" href="sample/sample-postcode-revenue.csv" download>Download CSV template</a>
   </header>
 
   <main>
@@ -30,7 +29,7 @@
           <button class="workflow-toggle" type="button" aria-expanded="true" aria-controls="dataSectionBody"><span>Data</span><small>Upload and columns</small></button>
           <div id="dataSectionBody" class="workflow-body">
             <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload CSV or Excel file"><input id="fileInput" type="file" accept=".csv,.xlsx,.xls" hidden /><div class="upload-icon">⇧</div><strong>Drop your file here</strong><span>or click to browse</span><small>CSV, XLSX or XLS</small></div>
-            <div class="sample-entry"><button id="sampleDataButton" type="button" aria-describedby="sampleDataHelp">Try ecommerce sample</button><small id="sampleDataHelp">Synthetic Shopify-style data · 1,800 rows · 450 postcodes</small></div>
+            <div class="sample-entry"><button id="sampleDataButton" type="button" aria-describedby="sampleDataHelp">Try ecomm sample data</button><small id="sampleDataHelp">Synthetic Shopify-style data · 1,800 rows · 450 postcodes</small></div>
             <div id="geographyStatus" class="operation-status" role="status" aria-live="polite">Loading postcode boundaries…</div>
             <button id="retryGeography" class="hidden" type="button">Retry postcode boundaries</button>
             <div id="fileStatus" class="file-status hidden" role="status" aria-live="polite"></div>
