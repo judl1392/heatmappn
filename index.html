@@ -24,85 +24,44 @@
 
     <section class="workspace">
       <aside class="panel controls">
-        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload CSV or Excel file">
-          <input id="fileInput" type="file" accept=".csv,.xlsx,.xls" hidden />
-          <div class="upload-icon">⇧</div>
-          <strong>Drop your file here</strong>
-          <span>or click to browse</span>
-          <small>CSV, XLSX or XLS</small>
-        </div>
-
-        <div id="fileStatus" class="file-status hidden"></div>
-
-        <div id="mappingControls" class="mapping hidden">
-          <label>Postcode column<select id="postcodeColumn"></select></label>
-          <label>Value column<select id="valueColumn"></select></label>
-          <label>How should duplicate postcodes be combined?<select id="aggregation"><option value="sum" selected>Sum</option><option value="avg">Average</option><option value="count">Count</option><option value="min">Minimum</option><option value="max">Maximum</option></select><small class="field-help">Rows with the same postcode will be combined using this method.</small></label>
-          <fieldset class="scale-controls"><legend>Colours and scale</legend>
-            <label>Scale method<select id="scaleMode"><option value="quantile" selected>Quantiles</option><option value="equal">Equal intervals</option><option value="continuous">Linear continuous</option><option value="log">Logarithmic</option><option value="diverging">Diverging</option></select></label>
-            <label>Colour palette<select id="paletteMode"><option value="blue">Blue</option><option value="green" selected>Green</option><option value="purple">Purple</option><option value="orange">Orange</option><option value="red">Red</option><option value="blue-red">Blue to red diverging</option><option value="colourblind">Colourblind-friendly</option></select></label>
-            <label id="classCountField">Number of classes<select id="classCount"><option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option><option>9</option></select></label>
-            <label id="divergingCentreField" class="hidden">Diverging centre<input id="divergingCentre" type="number" value="0" step="any" /></label>
-            <label class="toggle-label"><input id="reversePalette" type="checkbox" /> Reverse palette</label>
-            <div id="scaleWarning" class="scale-warning" aria-live="polite"></div>
-          </fieldset>
-          <fieldset class="format-controls"><legend>Value display</legend>
-            <label>Number format<select id="numberFormat"><option value="number">Number</option><option value="currency">Currency</option><option value="percentage">Percentage</option></select></label>
-            <label id="currencyField" class="hidden">Currency symbol<select id="currencySymbol"><option value="$">AUD $</option><option value="$">USD $</option><option value="£">GBP £</option><option value="€">EUR €</option><option value="custom">Custom</option></select></label>
-            <label id="customCurrencyField" class="hidden">Custom symbol<input id="customCurrencySymbol" value="$" maxlength="6" /></label>
-            <label>Decimal places<select id="decimalPlaces"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option></select></label>
-            <label class="toggle-label"><input id="compactNotation" type="checkbox" /> Compact notation <span>1,250,000 → 1.3M</span></label>
-            <label class="toggle-label"><input id="thousandsSeparator" type="checkbox" checked /> Thousands separators</label>
-            <small class="field-help">Percentage adds a % sign without changing the underlying value.</small>
-          </fieldset>
-          <fieldset class="presentation-controls"><legend>Map presentation</legend>
-            <label>Map title<input id="mapTitle" value="Australian postcode heatmap" /></label>
-            <label>Subtitle<input id="mapSubtitle" value="" placeholder="Optional" /></label>
-            <label>Value label<input id="valueLabel" value="" placeholder="Uses selected value column" /></label>
-            <label>Source note<input id="sourceNote" value="" placeholder="Optional" /></label>
-          </fieldset>
-          <fieldset class="appearance-controls"><legend>Map appearance</legend>
-            <label>Fill opacity <output id="fillOpacityValue">62%</output><input id="fillOpacity" type="range" min="0" max="1" step="0.05" value="0.62" /></label>
-            <label>Boundary opacity <output id="boundaryOpacityValue">70%</output><input id="boundaryOpacity" type="range" min="0" max="1" step="0.05" value="0.7" /></label>
-            <label>Boundary width<select id="boundaryWidth"><option value="0.4">Thin</option><option value="0.5" selected>Regular</option><option value="0.75">Medium</option><option value="1">Wide</option></select></label>
-            <label class="toggle-label"><input id="postcodeBorders" type="checkbox" checked /> Show postcode borders</label>
-            <label>Basemap<select id="basemapMode"><option value="light" selected>Light</option><option value="streets">Standard streets</option><option value="none">No basemap</option></select></label>
-            <small id="appearanceWarning" class="field-help appearance-warning" aria-live="polite"></small>
-          </fieldset>
-          <section id="dataPreview" class="data-preview" aria-labelledby="previewTitle">
-            <div class="preview-heading"><strong id="previewTitle">Data preview</strong><span>First 10 parsed rows</span></div>
-            <div id="previewDetection" class="preview-detection"></div>
-            <div class="preview-scroll"><table><thead id="previewHead"></thead><tbody id="previewBody"></tbody></table></div>
-          </section>
-          <section id="validationSummary" class="validation-summary" aria-labelledby="validationTitle">
-            <div class="preview-heading"><strong id="validationTitle">Validation summary</strong><span id="validationStatus"></span></div>
-            <dl id="validationMetrics" class="validation-metrics"></dl>
-            <div id="validationWarnings" class="validation-warnings" aria-live="polite"></div>
-            <div class="validation-downloads">
-              <button id="downloadInvalid" disabled>Download invalid rows</button>
-              <button id="downloadValidationUnmatched" disabled>Download unmatched rows</button>
-            </div>
-          </section>
-          <button id="buildButton" class="primary">Generate map</button>
-        </div>
-
-        <div id="summary" class="summary hidden"></div>
-        <section id="unmatchedPanel" class="unmatched hidden" aria-labelledby="unmatchedTitle">
-          <div class="preview-heading"><strong id="unmatchedTitle">Unmatched rows</strong><span id="unmatchedPreviewCount"></span></div>
-          <div class="preview-scroll"><table><thead id="unmatchedHead"></thead><tbody id="unmatchedBody"></tbody></table></div>
-          <button id="downloadUnmatched">Download unmatched rows</button>
+        <section class="workflow-section is-open" data-workflow-section="data">
+          <button class="workflow-toggle" type="button" aria-expanded="true" aria-controls="dataSectionBody"><span>Data</span><small>Upload and columns</small></button>
+          <div id="dataSectionBody" class="workflow-body">
+            <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload CSV or Excel file"><input id="fileInput" type="file" accept=".csv,.xlsx,.xls" hidden /><div class="upload-icon">⇧</div><strong>Drop your file here</strong><span>or click to browse</span><small>CSV, XLSX or XLS</small></div>
+            <div id="fileStatus" class="file-status hidden"></div>
+            <div id="mappingControls" class="mapping hidden"><label>Postcode column<select id="postcodeColumn"></select></label><label>Value column<select id="valueColumn"></select></label><label>How should duplicate postcodes be combined?<select id="aggregation"><option value="sum" selected>Sum</option><option value="avg">Average</option><option value="count">Count</option><option value="min">Minimum</option><option value="max">Maximum</option></select><small class="field-help">Rows with the same postcode will be combined using this method.</small></label></div>
+          </div>
         </section>
+
+        <section class="workflow-section requires-data hidden" data-workflow-section="validation">
+          <button class="workflow-toggle" type="button" aria-expanded="false" aria-controls="validationSectionBody"><span>Validation</span><small id="validationStatus">Waiting for data</small></button>
+          <div id="validationSectionBody" class="workflow-body" hidden>
+            <section id="validationSummary" class="validation-summary" aria-labelledby="validationTitle"><div class="preview-heading"><strong id="validationTitle">Validation summary</strong></div><div id="validationOverview" class="validation-overview" aria-live="polite"></div><dl id="validationMetrics" class="validation-metrics"></dl><div id="validationWarnings" class="validation-warnings" aria-live="polite"></div><div class="validation-downloads"><button id="downloadInvalid" disabled>Download invalid rows</button><button id="downloadValidationUnmatched" disabled>Download unmatched rows</button></div></section>
+            <section class="nested-disclosure"><button id="previewToggle" class="nested-toggle" type="button" aria-expanded="false" aria-controls="dataPreview">Preview: no rows yet</button><section id="dataPreview" class="data-preview" aria-labelledby="previewTitle" hidden><div class="preview-heading"><strong id="previewTitle">Data preview</strong><span>First 10 parsed rows</span></div><div id="previewDetection" class="preview-detection"></div><div class="preview-scroll"><table><thead id="previewHead"></thead><tbody id="previewBody"></tbody></table></div></section></section>
+            <section id="unmatchedPanel" class="unmatched hidden" aria-labelledby="unmatchedTitle"><button id="unmatchedToggle" class="nested-toggle" type="button" aria-expanded="false" aria-controls="unmatchedRowsBody">View unmatched rows <span id="unmatchedPreviewCount"></span></button><div id="unmatchedRowsBody" hidden><div class="preview-heading"><strong id="unmatchedTitle">Unmatched rows</strong></div><div class="preview-scroll"><table><thead id="unmatchedHead"></thead><tbody id="unmatchedBody"></tbody></table></div><button id="downloadUnmatched">Download unmatched rows</button></div></section>
+          </div>
+        </section>
+
+        <section class="workflow-section requires-data hidden" data-workflow-section="style">
+          <button class="workflow-toggle" type="button" aria-expanded="false" aria-controls="styleSectionBody"><span>Style</span><small>Colours and values</small></button>
+          <div id="styleSectionBody" class="workflow-body" hidden><div class="mapping">
+            <fieldset class="scale-controls"><legend>Colours and scale</legend><label>Scale method<select id="scaleMode"><option value="quantile" selected>Quantiles</option><option value="equal">Equal intervals</option><option value="continuous">Linear continuous</option><option value="log">Logarithmic</option><option value="diverging">Diverging</option></select></label><label>Colour palette<select id="paletteMode"><option value="blue">Blue</option><option value="green" selected>Green</option><option value="purple">Purple</option><option value="orange">Orange</option><option value="red">Red</option><option value="blue-red">Blue to red diverging</option><option value="colourblind">Colourblind-friendly</option></select></label><label id="classCountField">Number of classes<select id="classCount"><option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option><option>9</option></select></label><label id="divergingCentreField" class="hidden">Diverging centre<input id="divergingCentre" type="number" value="0" step="any" /></label><label class="toggle-label"><input id="reversePalette" type="checkbox" /> Reverse palette</label><div id="scaleWarning" class="scale-warning" aria-live="polite"></div></fieldset>
+            <fieldset class="format-controls"><legend>Value display</legend><label>Number format<select id="numberFormat"><option value="number">Number</option><option value="currency">Currency</option><option value="percentage">Percentage</option></select></label><label id="currencyField" class="hidden">Currency symbol<select id="currencySymbol"><option value="$">AUD $</option><option value="$">USD $</option><option value="£">GBP £</option><option value="€">EUR €</option><option value="custom">Custom</option></select></label><label id="customCurrencyField" class="hidden">Custom symbol<input id="customCurrencySymbol" value="$" maxlength="6" /></label><label>Decimal places<select id="decimalPlaces"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option><option value="3">3</option></select></label><label class="toggle-label"><input id="compactNotation" type="checkbox" /> Compact notation <span>1,250,000 → 1.3M</span></label><label class="toggle-label"><input id="thousandsSeparator" type="checkbox" checked /> Thousands separators</label><small class="field-help">Percentage adds a % sign without changing the underlying value.</small></fieldset>
+          </div></div>
+        </section>
+
+        <section class="workflow-section requires-data hidden" data-workflow-section="advanced"><button class="workflow-toggle" type="button" aria-expanded="false" aria-controls="advancedSectionBody"><span>Advanced</span><small>Labels and display</small></button><div id="advancedSectionBody" class="workflow-body" hidden><div class="mapping"><label>Value label<input id="valueLabel" value="" placeholder="Uses selected value column" /></label><small class="field-help">Map appearance settings are available from the gear button on the map.</small></div></div></section>
+        <div class="workflow-action requires-data hidden"><button id="buildButton" class="primary">Generate map</button></div>
+        <div id="summary" class="summary hidden"></div>
       </aside>
 
       <section class="map-card">
         <div class="map-toolbar">
-          <div class="map-heading"><strong id="displayTitle">Australian postcode heatmap</strong><span id="displaySubtitle" class="hidden"></span><span id="displayMeta">Upload data to begin</span><small id="displaySource" class="hidden"></small></div>
-          <button id="exportButton" disabled>Export PNG</button>
+          <div class="map-heading"><button id="displayTitle" class="inline-edit-display title-edit" type="button" aria-label="Edit map title">Australian postcode heatmap <span aria-hidden="true">✎</span></button><input id="mapTitle" class="inline-edit-input hidden" value="Australian postcode heatmap" aria-label="Map title" /><button id="displaySubtitle" class="inline-edit-display subtitle-edit" type="button" aria-label="Edit map subtitle"><span class="placeholder-text">Add subtitle</span> <span aria-hidden="true">✎</span></button><input id="mapSubtitle" class="inline-edit-input hidden" value="" placeholder="Optional subtitle" aria-label="Map subtitle" /><span id="displayMeta">Upload data to begin</span></div>
+          <div class="map-actions"><label class="postcode-search"><span class="sr-only">Search postcode</span><input id="postcodeSearch" inputmode="numeric" maxlength="4" placeholder="Postcode" /><button id="searchPostcodeButton" type="button">Search</button></label><button id="resetViewButton" type="button">Reset view</button><button id="exportButton" disabled>Export PNG</button><button id="appearanceButton" class="icon-button" type="button" aria-expanded="false" aria-controls="appearancePopover" aria-label="Map appearance">⚙</button></div>
         </div>
-        <div id="map"></div>
-        <div id="legend" class="legend hidden"></div>
-        <div id="pinnedDetail" class="pinned-detail hidden"><button id="closePinnedDetail" type="button" aria-label="Close postcode details">×</button><strong id="pinnedPostcode"></strong><span id="pinnedValue"></span></div>
-        <div id="emptyState" class="empty-state"><div class="empty-map">AU</div><strong>Your heatmap will appear here</strong><span>Use a file with one postcode column and one numeric value column.</span></div>
+        <div class="map-shell"><div id="map"></div><div id="appearancePopover" class="map-popover hidden" role="dialog" aria-label="Map appearance"><div class="popover-heading"><strong>Map appearance</strong><button id="closeAppearance" type="button" aria-label="Close map appearance">×</button></div><fieldset class="appearance-controls"><label>Fill opacity <output id="fillOpacityValue">62%</output><input id="fillOpacity" type="range" min="0" max="1" step="0.05" value="0.62" /></label><label>Boundary opacity <output id="boundaryOpacityValue">70%</output><input id="boundaryOpacity" type="range" min="0" max="1" step="0.05" value="0.7" /></label><label>Boundary width<select id="boundaryWidth"><option value="0.4">Thin</option><option value="0.5" selected>Regular</option><option value="0.75">Medium</option><option value="1">Wide</option></select></label><label class="toggle-label"><input id="postcodeBorders" type="checkbox" checked /> Show postcode borders</label><label>Basemap<select id="basemapMode"><option value="light" selected>Light</option><option value="streets">Standard streets</option><option value="none">No basemap</option></select></label><label>Legend position<select id="legendPosition"><option value="bottom-right" selected>Bottom right</option><option value="bottom-left">Bottom left</option><option value="top-right">Top right</option><option value="top-left">Top left</option></select></label><small id="appearanceWarning" class="field-help appearance-warning" aria-live="polite"></small></fieldset></div><div id="legend" class="legend legend-bottom-right hidden"></div><div id="pinnedDetail" class="pinned-detail hidden"><button id="closePinnedDetail" type="button" aria-label="Close postcode details">×</button><strong id="pinnedPostcode"></strong><span id="pinnedValue"></span></div><div id="emptyState" class="empty-state"><div class="empty-map">AU</div><strong>Your heatmap will appear here</strong><span>Use a file with one postcode column and one numeric value column.</span></div></div>
+        <div class="map-source"><button id="displaySource" class="inline-edit-display source-edit" type="button" aria-label="Edit source note"><span class="placeholder-text">Add source note</span> <span aria-hidden="true">✎</span></button><input id="sourceNote" class="inline-edit-input hidden" value="" placeholder="Optional source note" aria-label="Source note" /></div>
       </section>
     </section>
 

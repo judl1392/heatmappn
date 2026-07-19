@@ -17,6 +17,7 @@ const state = {
   scaleMin: 0,
   scaleMax: 0,
   scaleCentre: 0,
+  legendPosition: "bottom-right",
   validation: { invalidRows: [], unmatchedRows: [] },
 };
 const $ = (id) => document.getElementById(id);
@@ -117,6 +118,92 @@ function selectBasemap() {
   (id) => ($(id).onchange = applyAppearance),
 );
 $("basemapMode").onchange = selectBasemap;
+
+function setDisclosure(button, open) {
+  const body = $(button.getAttribute("aria-controls"));
+  button.setAttribute("aria-expanded", String(open));
+  body.hidden = !open;
+  button.closest(".workflow-section")?.classList.toggle("is-open", open);
+}
+document.querySelectorAll(".workflow-toggle").forEach((button) => {
+  button.onclick = () =>
+    setDisclosure(button, button.getAttribute("aria-expanded") !== "true");
+});
+function wireNestedDisclosure(buttonId) {
+  const button = $(buttonId),
+    body = $(button.getAttribute("aria-controls"));
+  button.onclick = () => {
+    const open = button.getAttribute("aria-expanded") !== "true";
+    button.setAttribute("aria-expanded", String(open));
+    body.hidden = !open;
+  };
+}
+wireNestedDisclosure("previewToggle");
+wireNestedDisclosure("unmatchedToggle");
+
+function setAppearancePopover(open) {
+  $("appearancePopover").classList.toggle("hidden", !open);
+  $("appearanceButton").setAttribute("aria-expanded", String(open));
+  if (open) $("basemapMode").focus();
+}
+$("appearanceButton").onclick = (event) => {
+  event.stopPropagation();
+  setAppearancePopover($("appearanceButton").getAttribute("aria-expanded") !== "true");
+};
+$("closeAppearance").onclick = () => {
+  setAppearancePopover(false);
+  $("appearanceButton").focus();
+};
+$("appearancePopover").onclick = (event) => event.stopPropagation();
+document.addEventListener("click", () => setAppearancePopover(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("appearanceButton").getAttribute("aria-expanded") === "true") {
+    setAppearancePopover(false);
+    $("appearanceButton").focus();
+  }
+});
+
+$("resetViewButton").onclick = () => {
+  if (state.layer && state.layer.getBounds().isValid())
+    map.fitBounds(state.layer.getBounds(), { padding: [12, 12], animate: false });
+  else map.setView([-27, 134], 4, { animate: false });
+};
+function searchPostcode() {
+  const postcode = cleanPostcode($("postcodeSearch").value);
+  if (!postcode || !state.geo) {
+    $("postcodeSearch").setCustomValidity("Enter a valid four-digit postcode.");
+    $("postcodeSearch").reportValidity();
+    return;
+  }
+  $("postcodeSearch").setCustomValidity("");
+  const feature = state.geo.features.find(
+    (item) => String(item.properties.POA_CODE21) === postcode,
+  );
+  if (!feature) {
+    $("postcodeSearch").setCustomValidity("This postcode is not in the ABS geography.");
+    $("postcodeSearch").reportValidity();
+    return;
+  }
+  map.fitBounds(L.geoJSON(feature).getBounds(), {
+    padding: [28, 28],
+    maxZoom: 12,
+    animate: false,
+  });
+  state.layer?.eachLayer((layer) => {
+    if (String(layer.feature.properties.POA_CODE21) === postcode) {
+      layer.openTooltip();
+      state.pinnedPostcode = postcode;
+      renderPinnedDetail();
+    }
+  });
+}
+$("searchPostcodeButton").onclick = searchPostcode;
+$("postcodeSearch").onkeydown = (event) => {
+  if (event.key === "Enter") searchPostcode();
+};
+new ResizeObserver(() => map.invalidateSize({ pan: false })).observe(
+  document.querySelector(".map-shell"),
+);
 
 fetch("data/australia-postal-areas.geojson")
   .then((r) => {
@@ -352,6 +439,11 @@ function loadRows(name, rows, headers, detail = null) {
   if (!state.valueLabelEdited) $("valueLabel").value = suggestions.value;
   state.columnConfidenceLow = suggestions.lowConfidence;
   $("mappingControls").classList.remove("hidden");
+  document
+    .querySelectorAll(".requires-data")
+    .forEach((element) => element.classList.remove("hidden"));
+  $("previewToggle").setAttribute("aria-expanded", "false");
+  $("dataPreview").hidden = true;
   recommendScale();
   renderPreview();
   renderValidation();
@@ -466,6 +558,8 @@ function renderPreview() {
         `<tr>${headers.map((h) => `<td title="${escapeAttr(row[h] ?? "")}">${escapeHtml(row[h] ?? "")}</td>`).join("")}</tr>`,
     )
     .join("");
+  $("previewToggle").textContent =
+    `Preview: ${rows.length.toLocaleString()} of ${state.rows.length.toLocaleString()} rows`;
 }
 $("postcodeColumn").onchange = () => {
   renderPreview();
@@ -559,6 +653,7 @@ function calculateValidation() {
   const pc = $("postcodeColumn").value,
     val = $("valueColumn").value,
     counts = new Map(),
+    submittedPostcodes = new Set(),
     invalidRows = [],
     validEntries = [];
   let blankPostcodes = 0,
@@ -587,6 +682,7 @@ function calculateValidation() {
       nonNumericValues++;
       reasons.push("Non-numeric value");
     }
+    if (postcode) submittedPostcodes.add(postcode);
     if (reasons.length) {
       invalidRows.push({
         ...row,
@@ -598,7 +694,7 @@ function calculateValidation() {
     counts.set(postcode, (counts.get(postcode) || 0) + 1);
     validEntries.push({ row, postcode, value, sourceRow: i + 2 });
   });
-  const unique = [...counts.keys()],
+  const unique = [...submittedPostcodes],
     validCodes = state.geo
       ? new Set(state.geo.features.map((f) => String(f.properties.POA_CODE21)))
       : null,
@@ -623,7 +719,12 @@ function calculateValidation() {
     ).length,
     matchedCount = validCodes ? unique.length - unmatchedCodes.size : 0,
     matchedPercentage =
-      validCodes && unique.length ? (matchedCount / unique.length) * 100 : null;
+      validCodes && unique.length ? (matchedCount / unique.length) * 100 : null,
+    mappedRows = validCodes ? validEntries.length - unmatchedRows.length : null,
+    mappedRowPercentage =
+      mappedRows !== null && state.rows.length
+        ? (mappedRows / state.rows.length) * 100
+        : null;
   return {
     totalRows: state.rows.length,
     validRows: validEntries.length,
@@ -636,6 +737,10 @@ function calculateValidation() {
     uniquePostcodes: unique.length,
     unmatchedPostcodes: validCodes ? unmatchedCodes.size : null,
     matchedPercentage,
+    matchedPostcodes: validCodes ? matchedCount : null,
+    mappedRows,
+    mappedRowPercentage,
+    attentionRows: invalidRows.length,
     invalidRows,
     unmatchedRows,
   };
@@ -660,10 +765,14 @@ function renderValidation() {
         : result.unmatchedPostcodes,
     ],
     [
-      "Matched percentage",
+      "Valid postcode geography match",
       result.matchedPercentage === null
         ? "Checking…"
-        : `${result.matchedPercentage.toFixed(1)}%`,
+        : result.uniquePostcodes === 0
+          ? "No valid postcodes"
+          : result.unmatchedPostcodes === 0
+            ? `${result.matchedPostcodes.toLocaleString()} of ${result.uniquePostcodes.toLocaleString()} matched`
+            : `${result.matchedPostcodes.toLocaleString()} of ${result.uniquePostcodes.toLocaleString()} matched (${result.matchedPercentage.toFixed(1)}%)`,
     ],
   ];
   $("validationMetrics").innerHTML = metrics
@@ -672,6 +781,33 @@ function renderValidation() {
         `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`,
     )
     .join("");
+  const geographyText =
+      result.matchedPostcodes === null
+        ? "Waiting for ABS geography"
+        : result.uniquePostcodes === 0
+          ? "No valid postcodes were available to match"
+          : result.unmatchedPostcodes === 0
+            ? `All ${result.uniquePostcodes.toLocaleString()} valid postcode${result.uniquePostcodes === 1 ? "" : "s"} matched ABS geography`
+            : `${result.matchedPostcodes.toLocaleString()} of ${result.uniquePostcodes.toLocaleString()} valid postcodes matched ABS geography (${result.matchedPercentage.toFixed(1)}%)`,
+    mappedText =
+      result.mappedRows === null
+        ? "Checking mapped rows…"
+        : `${result.mappedRows.toLocaleString()} of ${result.totalRows.toLocaleString()} rows mapped`,
+    usableText =
+      result.mappedRows === 0
+        ? "No rows are usable"
+        : result.mappedRowPercentage === null
+          ? "Calculating usability…"
+          : `${result.mappedRowPercentage.toFixed(1)}% usable`,
+    attentionText = `${result.attentionRows.toLocaleString()} row${result.attentionRows === 1 ? " needs" : "s need"} attention`,
+    allSuccessful =
+      result.mappedRows === result.totalRows && result.unmatchedPostcodes === 0,
+    overviewTone =
+      result.mappedRows === 0 ? "error" : allSuccessful ? "success" : "warning";
+  $("validationOverview").className =
+    `validation-overview validation-overview-${overviewTone}`;
+  $("validationOverview").innerHTML =
+    `<div><strong>${escapeHtml(mappedText)}</strong><span>${escapeHtml(usableText)}</span></div><div><strong>Geography match</strong><span>${escapeHtml(geographyText)}</span></div><div><strong>${escapeHtml(attentionText)}</strong><span>${result.attentionRows ? "Invalid or missing input" : "No row-level input issues"}</span></div>`;
   const warnings = [];
   if (result.invalidRows.length)
     warnings.push(
@@ -690,10 +826,18 @@ function renderValidation() {
         .map((w) => `<div class="validation-warning">${escapeHtml(w)}</div>`)
         .join("")
     : '<div class="validation-ok">No validation warnings found.</div>';
-  $("validationStatus").textContent =
-    result.matchedPercentage === null
-      ? "Waiting for geography"
-      : `${result.matchedPercentage.toFixed(1)}% matched`;
+  $("validationStatus").className =
+    `validation-compact validation-compact-${overviewTone}`;
+  $("validationStatus").innerHTML =
+    result.mappedRows === null
+      ? "Checking rows"
+      : result.mappedRows === 0
+        ? `<span>No usable rows</span><span>${escapeHtml(attentionText)}</span>`
+        : `<span>${escapeHtml(mappedText)}</span><span>${escapeHtml(usableText)}</span><span>${escapeHtml(attentionText)}</span>`;
+  $("validationStatus").setAttribute(
+    "aria-label",
+    `${mappedText}. ${usableText}. ${attentionText}. ${geographyText}.`,
+  );
   $("downloadInvalid").disabled = !result.invalidRows.length;
   $("downloadValidationUnmatched").disabled = !result.unmatchedRows.length;
 }
@@ -702,16 +846,62 @@ $("buildButton").onclick = buildMap;
 function currentValueLabel() {
   return $("valueLabel").value;
 }
-function updatePresentation() {
-  $("displayTitle").textContent = $("mapTitle").value;
-  $("displaySubtitle").textContent = $("mapSubtitle").value;
-  $("displaySubtitle").classList.toggle("hidden", !$("mapSubtitle").value);
-  $("displaySource").textContent = $("sourceNote").value;
-  $("displaySource").classList.toggle("hidden", !$("sourceNote").value);
+function setEditableText(display, value, placeholder) {
+  display.replaceChildren();
+  const text = document.createElement("span");
+  text.textContent = value || placeholder;
+  if (!value) text.className = "placeholder-text";
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "✎";
+  display.append(text, icon);
 }
-["mapTitle", "mapSubtitle", "sourceNote"].forEach(
-  (id) => ($(id).oninput = updatePresentation),
-);
+function updatePresentation() {
+  setEditableText($("displayTitle"), $("mapTitle").value, "Add map title");
+  setEditableText($("displaySubtitle"), $("mapSubtitle").value, "Add subtitle");
+  setEditableText($("displaySource"), $("sourceNote").value, "Add source note");
+}
+function wireInlineEditor(displayId, inputId) {
+  const display = $(displayId),
+    input = $(inputId);
+  let original = "",
+    editing = false;
+  function finish(save) {
+    if (!editing) return;
+    editing = false;
+    if (!save) input.value = original;
+    input.classList.add("hidden");
+    display.classList.remove("hidden");
+    updatePresentation();
+    if (state.mapGenerated) {
+      if (inputId === "mapTitle" || inputId === "mapSubtitle")
+        map.invalidateSize({ pan: false });
+    }
+  }
+  display.onclick = () => {
+    original = input.value;
+    editing = true;
+    display.classList.add("hidden");
+    input.classList.remove("hidden");
+    input.focus();
+    input.select();
+  };
+  input.onkeydown = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      input.blur();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+      display.focus();
+    }
+  };
+  input.onblur = () => finish(true);
+}
+wireInlineEditor("displayTitle", "mapTitle");
+wireInlineEditor("displaySubtitle", "mapSubtitle");
+wireInlineEditor("displaySource", "sourceNote");
+updatePresentation();
 $("valueLabel").oninput = () => {
   state.valueLabelEdited = true;
   if (state.mapGenerated) buildMap();
@@ -985,6 +1175,37 @@ function colour(v) {
   if (index < 0) index = state.palette.length - 1;
   return state.palette[Math.min(state.palette.length - 1, Math.max(0, index))];
 }
+function setLegendPosition(position) {
+  const allowed = ["top-left", "top-right", "bottom-left", "bottom-right"];
+  state.legendPosition = allowed.includes(position) ? position : "bottom-right";
+  $("legend").classList.remove(...allowed.map((item) => `legend-${item}`));
+  $("legend").classList.add(`legend-${state.legendPosition}`);
+  $("legendPosition").value = state.legendPosition;
+}
+$("legendPosition").onchange = () =>
+  setLegendPosition($("legendPosition").value);
+function wireLegendDrag() {
+  const handle = $("legend").querySelector(".legend-drag-handle");
+  if (!handle) return;
+  handle.onpointerdown = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    handle.setPointerCapture(event.pointerId);
+    map.dragging.disable();
+  };
+  handle.onpointerup = (event) => {
+    const bounds = document.querySelector(".map-shell").getBoundingClientRect(),
+      horizontal = event.clientX < bounds.left + bounds.width / 2 ? "left" : "right",
+      vertical = event.clientY < bounds.top + bounds.height / 2 ? "top" : "bottom";
+    setLegendPosition(`${vertical}-${horizontal}`);
+    if (handle.hasPointerCapture(event.pointerId))
+      handle.releasePointerCapture(event.pointerId);
+    map.dragging.enable();
+  };
+  handle.onpointercancel = () => map.dragging.enable();
+  L.DomEvent.disableClickPropagation($("legend"));
+  L.DomEvent.disableScrollPropagation($("legend"));
+}
 function renderLegend() {
   const aggLabel = aggregationLabels[$("aggregation").value],
     valueLabel = currentValueLabel(),
@@ -999,8 +1220,10 @@ function renderLegend() {
           )
           .join("");
   $("legend").innerHTML =
-    `<div class="legend-title">${escapeHtml(label)}</div>${entries}<div class="legend-row legend-no-data"><span class="swatch"></span><span>No data</span></div>`;
+    `<div class="legend-drag-handle" title="Drag to another corner">Drag legend</div><div class="legend-title">${escapeHtml(label)}</div>${entries}<div class="legend-row legend-no-data"><span class="swatch"></span><span>No data</span></div>`;
   $("legend").classList.remove("hidden");
+  setLegendPosition(state.legendPosition);
+  wireLegendDrag();
 }
 function renderSummary() {
   const vals = [...state.values.values()],
