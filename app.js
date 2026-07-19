@@ -1,10 +1,20 @@
 const state = {
   rows: [],
+  filteredRows: [],
+  filterDefinitions: [],
+  activeFilters: [],
+  rowNumbers: new Map(),
   headers: [],
+  columns: [],
   geo: null,
   layer: null,
   noDataLayer: null,
   values: new Map(),
+  primaryValues: new Map(),
+  comparisonValues: new Map(),
+  absoluteChanges: new Map(),
+  percentageChanges: new Map(),
+  comparisonReadiness: null,
   unmatched: [],
   breaks: [],
   importDetail: null,
@@ -19,7 +29,25 @@ const state = {
   scaleCentre: 0,
   legendPosition: "bottom-right",
   exportStyleRevision: 0,
+  scalePreferences: {
+    raw: {
+      scaleMode: "quantile",
+      palette: "green",
+      classCount: "6",
+      reverse: false,
+      centre: "0",
+    },
+    change: {
+      scaleMode: "diverging",
+      palette: "blue-red",
+      classCount: "6",
+      reverse: false,
+      centre: "0",
+    },
+  },
+  activeScalePreference: "raw",
   validation: { invalidRows: [], unmatchedRows: [] },
+  statusAffectedRows: [],
 };
 const $ = (id) => document.getElementById(id);
 const paletteDefinitions = {
@@ -265,7 +293,7 @@ function handleFile(file) {
       skipEmptyLines: "greedy",
       complete: (r) => {
         const parsed = normaliseParsedHeaders(r.data, r.meta.fields || []);
-        loadRows(file.name, parsed.rows, parsed.headers);
+        loadRows(file.name, parsed.rows, parsed.headers, null, parsed.columns);
       },
       error: (e) => alert(e.message),
     });
@@ -273,14 +301,14 @@ function handleFile(file) {
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
-        const wb = XLSX.read(e.target.result, { type: "array" }),
+        const wb = XLSX.read(e.target.result, { type: "array", cellDates: true }),
           detected = detectWorkbookTable(wb);
         if (!detected)
           throw new Error("No tabular rows found in the workbook.");
         loadRows(file.name, detected.rows, detected.headers, {
           sheetName: detected.sheetName,
           headerRow: detected.headerRow + 1,
-        });
+        }, detected.columns);
       } catch (err) {
         alert("Could not read workbook: " + err.message);
       }
@@ -302,7 +330,7 @@ const headerTerms = [
 ];
 function meaningfulHeader(v) {
   const s = String(v ?? "").trim();
-  return s && !/^__EMPTY(?:_\d+)?$/i.test(s) && /[a-z]/i.test(s);
+  return Boolean(s && !/^__EMPTY(?:_\d+)?$/i.test(s));
 }
 function dataCell(v) {
   if (v === null || v === undefined || String(v).trim() === "") return false;
@@ -356,6 +384,7 @@ function detectWorkbookTable(wb) {
         sheetIndex,
         headerRow: rowIndex,
         score,
+        measureContext: detectMeasureContext(preview, rowIndex),
       };
       if (
         !best ||
@@ -367,16 +396,44 @@ function detectWorkbookTable(wb) {
   });
   return best ? parseDetectedTable(best) : null;
 }
+function detectMeasureContext(preview, headerRow) {
+  const pattern = /^\s*(Counting|Measure|Metric|Value|Unit)\s*:\s*(.+?)\s*$/i;
+  for (let rowIndex = headerRow - 1; rowIndex >= Math.max(0, headerRow - 8); rowIndex--) {
+    for (const cell of preview[rowIndex] || []) {
+      const match = String(cell ?? "").match(pattern);
+      if (match && match[2].trim().length <= 60) return match[2].trim();
+    }
+  }
+  return "";
+}
+function ambiguousMeasureHeader(value) {
+  const text = String(value ?? "").trim();
+  return /^\d+(?:\.\d+)?%?$/.test(text) || /^\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}$/.test(text);
+}
+function makeColumns(sourceHeaders, data, measureContext = "") {
+  const meaningfulCount = sourceHeaders.filter(meaningfulHeader).length;
+  return sourceHeaders.map((source, index) => {
+    let rawHeader = meaningfulHeader(source) ? String(source).trim() : "";
+    if (!rawHeader && meaningfulCount === 1 && data.some((row) => dataCell(row[index]))) rawHeader = "Value";
+    if (!rawHeader) rawHeader = `Column ${XLSX.utils.encode_col(index)}`;
+    const label = measureContext && ambiguousMeasureHeader(rawHeader) &&
+      !rawHeader.toLocaleLowerCase().includes(measureContext.toLocaleLowerCase())
+      ? `${rawHeader} — ${measureContext}` : rawHeader;
+    return { key: `col_${index}`, rawHeader, label, columnLetter: XLSX.utils.encode_col(index) };
+  });
+}
 function parseDetectedTable(found) {
   const matrix = XLSX.utils.sheet_to_json(found.ws, {
     header: 1,
     defval: "",
-    raw: false,
+    raw: true,
     range: found.headerRow,
     blankrows: false,
-  });
+  }), formattedHeader = XLSX.utils.sheet_to_json(found.ws, {
+    header: 1, defval: "", raw: false, range: found.headerRow, blankrows: false,
+  })[0] || [];
   if (matrix.length < 2) return null;
-  const sourceHeaders = matrix[0],
+  const sourceHeaders = formattedHeader,
     data = matrix.slice(1),
     usedColumns = Math.max(
       sourceHeaders.length,
@@ -384,52 +441,156 @@ function parseDetectedTable(found) {
         r.reduce((last, v, i) => (String(v ?? "").trim() ? i + 1 : last), 0),
       ),
     ),
-    realHeaderCount = sourceHeaders
-      .slice(0, usedColumns)
-      .filter(meaningfulHeader).length;
-  const headers = [],
-    seen = new Map();
-  for (let i = 0; i < usedColumns; i++) {
-    let name = meaningfulHeader(sourceHeaders[i])
-      ? String(sourceHeaders[i]).trim()
-      : "";
-    const hasNumericData = data.some((r) => dataCell(r[i]));
-    if (!name && realHeaderCount === 1 && hasNumericData) name = "Value";
-    if (!name) name = `Column ${XLSX.utils.encode_col(i)}`;
-    const count = (seen.get(name) || 0) + 1;
-    seen.set(name, count);
-    headers.push(count === 1 ? name : `${name} ${count}`);
-  }
+    columns = makeColumns(sourceHeaders.slice(0, usedColumns), data, found.measureContext);
   const rows = data
     .filter((r) => r.some((v) => String(v ?? "").trim() !== ""))
-    .map((r) => Object.fromEntries(headers.map((h, i) => [h, r[i] ?? ""])));
-  return { ...found, headers, rows };
+    .map((r) => Object.fromEntries(columns.map((column, i) => [column.key, r[i] ?? ""])));
+  return { ...found, headers: columns.map((column) => column.key), columns, rows };
 }
 
 function normaliseParsedHeaders(rows, sourceHeaders) {
-  const realCount = sourceHeaders.filter(meaningfulHeader).length,
-    headers = [],
-    seen = new Map();
-  sourceHeaders.forEach((source, i) => {
-    let name = meaningfulHeader(source) ? String(source).trim() : "";
-    if (!name && realCount === 1 && rows.some((row) => dataCell(row[source])))
-      name = "Value";
-    if (!name) name = `Column ${String.fromCharCode(65 + i)}`;
-    const count = (seen.get(name) || 0) + 1;
-    seen.set(name, count);
-    headers.push(count === 1 ? name : `${name} ${count}`);
-  });
+  const matrix = rows.map((row) => sourceHeaders.map((source) => row[source] ?? "")),
+    columns = makeColumns(sourceHeaders, matrix);
   return {
-    headers,
-    rows: rows.map((row) =>
-      Object.fromEntries(
-        headers.map((header, i) => [header, row[sourceHeaders[i]] ?? ""]),
-      ),
-    ),
+    headers: columns.map((column) => column.key),
+    columns,
+    rows: rows.map((row) => Object.fromEntries(columns.map((column, i) => [column.key, row[sourceHeaders[i]] ?? ""]))),
   };
 }
 
-function loadRows(name, rows, headers, detail = null) {
+const recognisedFilterHeaders = /(^|\b)(channel|category|year|month|segment|state|region|type|band|group|class|status|market|store)(\b|$)/i;
+const excludedFilterHeaders = /(^|\b)(id|identifier|reference|ref|row|email|url|website|timestamp|description|comment|notes?)(\b|$)/i;
+function normalisedFilterValue(value) {
+  if (blank(value)) return "__blank__";
+  if (typeof value === "number" && Number.isFinite(value)) return `n:${value}`;
+  return `s:${String(value).trim().toLocaleLowerCase("en-AU")}`;
+}
+function filterDisplayValue(value) {
+  if (blank(value)) return "Blank";
+  return String(value).trim();
+}
+function buildFilterDefinition(header, rows, suggested = false) {
+  const variants = new Map();
+  let nonBlank = 0,
+    textLength = 0,
+    numericValues = 0,
+    emailValues = 0,
+    urlValues = 0;
+  rows.forEach((row) => {
+    const value = row[header],
+      key = normalisedFilterValue(value),
+      label = filterDisplayValue(value);
+    if (!blank(value)) {
+      nonBlank += 1;
+      textLength += label.length;
+      if (typeof value === "number" || /^-?\d+(?:\.\d+)?$/.test(label))
+        numericValues += 1;
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(label)) emailValues += 1;
+      if (/^(https?:\/\/|www\.)/i.test(label)) urlValues += 1;
+    }
+    if (!variants.has(key)) variants.set(key, new Map());
+    const labels = variants.get(key);
+    labels.set(label, (labels.get(label) || 0) + 1);
+  });
+  const options = [...variants].map(([key, labels]) => {
+    const [label, count] = [...labels].sort((a, b) => b[1] - a[1])[0];
+    const numericSort = key.startsWith("n:") || /^s:-?\d+(?:\.\d+)?$/.test(key);
+    return {
+      key,
+      label,
+      count: [...labels.values()].reduce((sum, value) => sum + value, 0),
+      numericSort,
+      sortValue: numericSort ? Number(key.slice(2)) : null,
+    };
+  });
+  options.sort((a, b) => {
+    if (a.key === "__blank__") return 1;
+    if (b.key === "__blank__") return -1;
+    if (a.numericSort && b.numericSort) return a.sortValue - b.sortValue;
+    return a.label.localeCompare(b.label, "en-AU", { sensitivity: "base" });
+  });
+  const unique = options.length,
+    coverage = nonBlank / Math.max(1, rows.length),
+    uniqueRatio = unique / Math.max(1, nonBlank),
+    averageLength = textLength / Math.max(1, nonBlank),
+    recognised = recognisedFilterHeaders.test(header),
+    discreteNumeric = numericValues / Math.max(1, nonBlank) > 0.8 && unique <= 24,
+    score =
+      (recognised ? 100 : 0) +
+      Math.max(0, 35 - unique) +
+      coverage * 30 -
+      uniqueRatio * 35 -
+      Math.max(0, averageLength - 24);
+  return {
+    header,
+    options,
+    unique,
+    coverage,
+    averageLength,
+    recognised,
+    discreteNumeric,
+    looksLikeContact:
+      emailValues / Math.max(1, nonBlank) > 0.25 ||
+      urlValues / Math.max(1, nonBlank) > 0.25,
+    score,
+    suggested,
+    visible: suggested,
+  };
+}
+function detectFilterDefinitions(rows, headers) {
+  const excludedColumns = new Set([
+    $("postcodeColumn").value,
+    $("valueColumn").value,
+    ...(comparisonEnabled() ? [$("comparisonColumn").value] : []),
+  ]);
+  const definitions = headers
+    .filter((header) => !excludedColumns.has(header))
+    .map((header) => buildFilterDefinition(header, rows))
+    .map((definition) => {
+      const highCardinality =
+        definition.unique > 50 ||
+        (definition.unique > 12 && definition.unique / Math.max(1, rows.length) > 0.25);
+      const eligible =
+        definition.unique >= 2 &&
+        !highCardinality &&
+        definition.averageLength <= 60 &&
+        !definition.looksLikeContact &&
+        !excludedFilterHeaders.test(definition.header) &&
+        (definition.recognised || definition.discreteNumeric || definition.unique <= 20);
+      return { ...definition, eligible };
+    });
+  const suggested = definitions
+    .filter((definition) => definition.eligible)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+  const suggestedHeaders = new Set(suggested.map((definition) => definition.header));
+  return definitions.map((definition) => ({
+    ...definition,
+    suggested: suggestedHeaders.has(definition.header),
+    visible: suggestedHeaders.has(definition.header),
+  }));
+}
+function analysisRows() {
+  return state.filteredRows;
+}
+function sourceRowNumber(row) {
+  return state.rowNumbers.get(row) || 2;
+}
+
+function columnInfo(key) {
+  return state.columns.find((column) => column.key === key) || { key, rawHeader: String(key), label: String(key), columnLetter: "" };
+}
+function columnLabel(key) {
+  return columnInfo(key).label;
+}
+function outputColumnLabel(key) {
+  const column = columnInfo(key), duplicates = state.columns.filter((item) => item.label === column.label).length;
+  return duplicates > 1 ? `${column.label} (Column ${column.columnLetter})` : column.label;
+}
+function userFacingRows(rows) {
+  return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key.startsWith("col_") ? outputColumnLabel(key) : key === "_reason" ? "Reason" : key === "_row" ? "Source row" : key, value])));
+}
+function loadRows(name, rows, headers, detail = null, columns = null) {
   const populatedHeaders = headers.filter((header) =>
     rows.some((row) => !blank(row[header])),
   );
@@ -438,7 +599,31 @@ function loadRows(name, rows, headers, detail = null) {
     return;
   }
   state.rows = rows;
+  state.filteredRows = rows.slice();
+  state.mapGenerated = false;
+  state.values = new Map();
+  state.primaryValues = new Map();
+  state.comparisonValues = new Map();
+  state.absoluteChanges = new Map();
+  state.percentageChanges = new Map();
+  if (state.layer) { map.removeLayer(state.layer); state.layer = null; }
+  $("legend").classList.add("hidden");
+  $("mapInsights").classList.add("hidden");
+  $("pinnedDetail").classList.add("hidden");
+  $("emptyState").querySelector("strong").textContent = "Your heatmap will appear here";
+  $("emptyState").querySelector("span").textContent = "Choose your columns and generate the map when ready.";
+  $("emptyState").classList.remove("hidden");
+  $("exportButton").disabled = true;
+  state.rowNumbers = new Map(rows.map((row, index) => [row, index + 2]));
+  state.activeFilters = [];
+  state.filterDefinitions = [];
+  openFilterHeader = null;
+  filterDraft = new Set();
+  filterDraftRules = [];
+  filterSearch = "";
   state.headers = populatedHeaders;
+  state.columns = (columns || headers.map((key, index) => ({ key, rawHeader: String(key), label: String(key), columnLetter: XLSX.utils.encode_col(index) })))
+    .filter((column) => populatedHeaders.includes(column.key));
   state.importDetail = detail;
   const excelDetail = detail
     ? `<br>Worksheet: ${escapeHtml(detail.sheetName)} · detected header row ${detail.headerRow}`
@@ -448,10 +633,23 @@ function loadRows(name, rows, headers, detail = null) {
   $("fileStatus").classList.remove("hidden");
   fillSelect($("postcodeColumn"), populatedHeaders, rows);
   fillSelect($("valueColumn"), populatedHeaders, rows);
+  fillSelect($("comparisonColumn"), populatedHeaders, rows);
   const suggestions = suggestColumns(rows, populatedHeaders);
   $("postcodeColumn").value = suggestions.postcode;
   $("valueColumn").value = suggestions.value;
-  if (!state.valueLabelEdited) $("valueLabel").value = suggestions.value;
+  const comparisonCandidate = populatedHeaders
+    .filter((header) => header !== suggestions.value && header !== suggestions.postcode)
+    .map((header) => ({
+      header,
+      numericRate:
+        rows.filter((row) => !blank(row[header])).filter((row) => numeric(row[header]) !== null)
+          .length /
+        Math.max(1, rows.filter((row) => !blank(row[header])).length),
+    }))
+    .sort((a, b) => b.numericRate - a.numericRate)[0];
+  if (comparisonCandidate) $("comparisonColumn").value = comparisonCandidate.header;
+  state.filterDefinitions = detectRuleDefinitions(rows, populatedHeaders);
+  if (!state.valueLabelEdited) $("valueLabel").value = "";
   state.columnConfidenceLow = suggestions.lowConfidence;
   $("mappingControls").classList.remove("hidden");
   document
@@ -459,6 +657,9 @@ function loadRows(name, rows, headers, detail = null) {
     .forEach((element) => element.classList.remove("hidden"));
   $("previewToggle").setAttribute("aria-expanded", "false");
   $("dataPreview").hidden = true;
+  updateComparisonControls();
+  renderFilterControls();
+  updateFilterContext();
   recommendScale();
   renderPreview();
   renderValidation();
@@ -470,13 +671,403 @@ function fillSelect(sel, headers, rows) {
       const sample = rows.find((row) => !blank(row[header]))?.[header],
         text = sample === undefined ? "" : String(sample).trim(),
         short = text.length > 24 ? `${text.slice(0, 21)}…` : text,
-        label = short ? `${header} — e.g. ${short}` : header;
-      return `<option value="${escapeAttr(header)}">${escapeHtml(label)}</option>`;
+        type = inferColumnType(header, rows),
+        label = `${columnLabel(header)} · ${typeLabel(type)}${short ? ` · e.g. ${short}` : ""}`,
+        raw = columnInfo(header).rawHeader;
+      return `<option value="${escapeAttr(header)}" title="Raw header: ${escapeAttr(raw)}">${escapeHtml(label)}</option>`;
     })
     .join("");
 }
+let openFilterHeader = null,
+  filterDraft = new Set(),
+  filterSearch = "";
+function filterDefinition(header) {
+  return state.filterDefinitions.find((definition) => definition.header === header);
+}
+function filterSelectionSummary(definition) {
+  if (!state.activeFilters.has(definition.header)) return "All values";
+  const count = state.activeFilters.get(definition.header).size;
+  if (!count) return "No values selected";
+  return `${count} of ${definition.options.length} selected`;
+}
+function renderFilterOptions(definition) {
+  const query = filterSearch.trim().toLocaleLowerCase("en-AU"),
+    matching = definition.options.filter((option) =>
+      option.label.toLocaleLowerCase("en-AU").includes(query),
+    ),
+    shown = matching.slice(0, 100);
+  return `${definition.options.length > 8 ? `<label class="filter-search"><span class="sr-only">Search ${escapeHtml(definition.header)} values</span><input type="search" data-filter-search placeholder="Search values" value="${escapeAttr(filterSearch)}" /></label>` : ""}<div class="filter-option-actions"><button type="button" data-filter-select-all>Select all</button><button type="button" data-filter-clear-draft>Clear</button></div><div class="filter-option-list">${shown
+    .map(
+      (option) =>
+        `<label><input type="checkbox" data-filter-option="${escapeAttr(option.key)}" ${filterDraft.has(option.key) ? "checked" : ""} /><span>${escapeHtml(option.label)}</span><small>${option.count.toLocaleString()}</small></label>`,
+    )
+    .join("")}</div>${matching.length > shown.length ? `<small class="field-help">Showing the first ${shown.length} matching values. Refine the search to see more.</small>` : ""}<div class="filter-popover-actions"><button type="button" class="primary" data-filter-apply>Apply filter</button><button type="button" data-filter-clear>Clear filter</button><button type="button" data-filter-close>Cancel</button></div>`;
+}
+function renderFilterControls() {
+  const visible = state.filterDefinitions.filter((definition) => definition.visible);
+  $("filterControls").innerHTML = visible.length
+    ? visible
+        .map(
+          (definition) =>
+            `<div class="filter-control"><button type="button" class="filter-control-button" data-filter-open="${escapeAttr(definition.header)}" aria-expanded="${openFilterHeader === definition.header}" aria-controls="filterPopover-${escapeAttr(definition.header)}"><span>${escapeHtml(definition.header)}</span><small>${escapeHtml(filterSelectionSummary(definition))}</small></button>${openFilterHeader === definition.header ? `<div id="filterPopover-${escapeAttr(definition.header)}" class="filter-popover" role="dialog" aria-label="Filter ${escapeAttr(definition.header)}">${renderFilterOptions(definition)}</div>` : ""}</div>`,
+        )
+        .join("")
+    : '<p class="field-help">No low-cardinality filter columns were detected automatically.</p>';
+  const available = state.filterDefinitions.filter((definition) => !definition.visible);
+  $("addFilterField").classList.toggle("hidden", !available.length);
+  $("addFilterColumn").innerHTML =
+    '<option value="">Choose a column…</option>' +
+    available
+      .map(
+        (definition) =>
+          `<option value="${escapeAttr(definition.header)}">${escapeHtml(definition.header)} (${definition.unique.toLocaleString()} values)</option>`,
+      )
+      .join("");
+}
+function applyFilters() {
+  state.filteredRows = state.rows.filter((row) =>
+    [...state.activeFilters].every(([header, selected]) =>
+      selected.has(normalisedFilterValue(row[header])),
+    ),
+  );
+  updateFilterContext();
+  renderFilterControls();
+  renderPreview();
+  renderValidation();
+  if (state.mapGenerated) buildMap();
+  else if (!state.filteredRows.length && state.activeFilters.length)
+    clearMappedDisplay("No rows match the current filters.");
+  else {
+    $("emptyState").querySelector("strong").textContent =
+      "Your heatmap will appear here";
+    $("emptyState").querySelector("span").textContent =
+      "Choose your columns and generate the map when ready.";
+    $("displayMeta").textContent = state.activeFilters.length
+      ? `${state.filteredRows.length.toLocaleString()} of ${state.rows.length.toLocaleString()} rows included`
+      : "Upload data to begin";
+  }
+}
+function clearFilter(header) {
+  state.activeFilters.delete(header);
+  if (openFilterHeader === header) openFilterHeader = null;
+  applyFilters();
+}
+function resetAllFilters() {
+  state.activeFilters.clear();
+  openFilterHeader = null;
+  filterDraft = new Set();
+  filterSearch = "";
+  applyFilters();
+}
+function activeFilterDescription(definition, selected, maximum = 3) {
+  const labels = definition.options
+    .filter((option) => selected.has(option.key))
+    .map((option) => option.label);
+  if (!labels.length) return "No values";
+  return labels.length > maximum
+    ? `${labels.slice(0, maximum).join(", ")} +${labels.length - maximum} more`
+    : labels.join(", ");
+}
+function filterExportNote() {
+  const parts = [...state.activeFilters].map(([header, selected]) => {
+    const definition = filterDefinition(header);
+    return `${header} = ${activeFilterDescription(definition, selected, 4)}`;
+  });
+  const note = parts.join("; ");
+  return note.length > 180 ? `${note.slice(0, 177)}…` : note;
+}
+function updateFilterContext() {
+  const included = state.filteredRows.length,
+    uploaded = state.rows.length,
+    countText = `${included.toLocaleString()} of ${uploaded.toLocaleString()} rows included`,
+    active = [...state.activeFilters];
+  $("filterRowCount").textContent = countText;
+  $("filterSectionStatus").textContent = active.length
+    ? `${active.length} active · ${included.toLocaleString()} rows`
+    : "All rows included";
+  $("resetFilters").disabled = !active.length;
+  $("mapFilterContext").classList.toggle("hidden", !active.length);
+  $("mapFilterRowCount").textContent = countText;
+  $("activeFilterChips").innerHTML = active
+    .map(([header, selected]) => {
+      const definition = filterDefinition(header);
+      return `<span class="filter-chip"><span>${escapeHtml(header)}: ${escapeHtml(activeFilterDescription(definition, selected))}</span><button type="button" data-clear-filter="${escapeAttr(header)}" aria-label="Clear ${escapeAttr(header)} filter">×</button></span>`;
+    })
+    .join("");
+}
+$("filterControls").onclick = (event) => {
+  const openButton = event.target.closest("[data-filter-open]");
+  if (openButton) {
+    const header = openButton.dataset.filterOpen,
+      definition = filterDefinition(header);
+    openFilterHeader = openFilterHeader === header ? null : header;
+    filterSearch = "";
+    filterDraft = state.activeFilters.has(header)
+      ? new Set(state.activeFilters.get(header))
+      : new Set(definition.options.map((option) => option.key));
+    renderFilterControls();
+    return;
+  }
+  if (!openFilterHeader) return;
+  const definition = filterDefinition(openFilterHeader),
+    option = event.target.closest("[data-filter-option]");
+  if (option) {
+    if (option.checked) filterDraft.add(option.dataset.filterOption);
+    else filterDraft.delete(option.dataset.filterOption);
+  } else if (event.target.closest("[data-filter-select-all]")) {
+    filterDraft = new Set(definition.options.map((item) => item.key));
+    renderFilterControls();
+  } else if (event.target.closest("[data-filter-clear-draft]")) {
+    filterDraft = new Set();
+    renderFilterControls();
+  } else if (event.target.closest("[data-filter-apply]")) {
+    if (filterDraft.size === definition.options.length)
+      state.activeFilters.delete(openFilterHeader);
+    else state.activeFilters.set(openFilterHeader, new Set(filterDraft));
+    openFilterHeader = null;
+    applyFilters();
+  } else if (event.target.closest("[data-filter-clear]")) {
+    clearFilter(openFilterHeader);
+  } else if (event.target.closest("[data-filter-close]")) {
+    openFilterHeader = null;
+    renderFilterControls();
+  }
+};
+$("filterControls").onkeydown = (event) => {
+  if (event.key === "Enter" && !event.target.matches("[data-rule-search]")) {
+    event.preventDefault();
+    updateDraftRuleInput(event.target);
+    applyDraftFilters();
+  }
+};
+$("filterControls").oninput = (event) => {
+  if (!event.target.matches("[data-filter-search]")) return;
+  filterSearch = event.target.value;
+  const position = event.target.selectionStart;
+  renderFilterControls();
+  const input = $("filterControls").querySelector("[data-filter-search]");
+  input?.focus();
+  input?.setSelectionRange(position, position);
+};
+$("addFilterColumn").onchange = () => {
+  const definition = filterDefinition($("addFilterColumn").value);
+  if (!definition) return;
+  definition.visible = true;
+  renderFilterControls();
+};
+$("resetFilters").onclick = resetAllFilters;
+$("clearAllMapFilters").onclick = resetAllFilters;
+$("activeFilterChips").onclick = (event) => {
+  const button = event.target.closest("[data-clear-filter]");
+  if (button) clearFilter(button.dataset.clearFilter);
+};
+
+// General type-aware row-filter builder. The earlier categorical helpers remain
+// as upload metadata utilities; these definitions own the current filter UI.
+let filterDraftRules = [],
+  nextFilterRuleId = 1;
+const ruleOperators = {
+  postcode: [
+    ["starts", "Starts with"], ["eq", "Equals"], ["neq", "Does not equal"],
+    ["between", "Between"], ["one_of", "Is one of"], ["blank", "Is blank"], ["not_blank", "Is not blank"],
+  ],
+  numeric: [
+    ["gt", "Greater than"], ["gte", "Greater than or equal to"], ["lt", "Less than"],
+    ["lte", "Less than or equal to"], ["eq", "Equals"], ["neq", "Does not equal"],
+    ["between", "Between (inclusive)"], ["blank", "Is blank"], ["not_blank", "Is not blank"],
+  ],
+  text: [
+    ["any", "Is any of"], ["not_any", "Is not any of"], ["eq", "Equals"], ["neq", "Does not equal"],
+    ["contains", "Contains"], ["not_contains", "Does not contain"], ["starts", "Starts with"],
+    ["blank", "Is blank"], ["not_blank", "Is not blank"],
+  ],
+  date: [
+    ["eq", "Equals"], ["before", "Before"], ["after", "After"], ["between", "Between (inclusive)"],
+    ["blank", "Is blank"], ["not_blank", "Is not blank"],
+  ],
+};
+function inferColumnType(key, rows = state.rows) {
+  if (key === $("postcodeColumn").value) return "postcode";
+  const values = rows.map((row) => row[key]).filter((value) => !blank(value)),
+    denominator = Math.max(1, values.length),
+    name = normalisedHeader(key),
+    postcodeRate = values.filter((value) => cleanPostcode(value) !== null).length / denominator,
+    numericRate = values.filter((value) => numeric(value) !== null).length / denominator,
+    dateRate = values.filter((value) => /[\/-]/.test(String(value)) && Number.isFinite(Date.parse(value))).length / denominator;
+  if (/(postcode|post code|postal area|\bpoa\b|\bzip\b)/.test(name) && postcodeRate >= 0.5) return "postcode";
+  if (key === $("valueColumn").value || (comparisonEnabled() && key === $("comparisonColumn").value) || numericRate >= 0.8) return "numeric";
+  if (dateRate >= 0.9) return "date";
+  return "text";
+}
+function typeLabel(type) {
+  return ({ postcode: "Postcode", numeric: "Numeric", text: "Text", date: "Date" })[type] || "Text";
+}
+function detectRuleDefinitions(rows, headers) {
+  return headers.map((key) => {
+    const categorical = buildFilterDefinition(key, rows);
+    return { ...categorical, key, header: key, label: columnLabel(key), type: inferColumnType(key, rows), lowCardinality: categorical.unique <= 50 };
+  });
+}
+function defaultOperator(column) {
+  const definition = filterDefinition(column), type = inferColumnType(column);
+  return type === "postcode" ? "starts" : type === "numeric" ? "gte" : type === "date" ? "after" : definition?.lowCardinality ? "any" : "contains";
+}
+function newFilterRule(column) {
+  return { id: `filter_${nextFilterRuleId++}`, column, operator: defaultOperator(column), value: "", value2: "", values: new Set() };
+}
+function cloneRule(rule) {
+  return { ...rule, values: new Set(rule.values || []) };
+}
+function filterDefinition(key) {
+  return state.filterDefinitions.find((definition) => definition.key === key || definition.header === key);
+}
+function operatorOptions(type, selected, definition) {
+  const operators = type === "text" && !definition?.lowCardinality
+    ? ruleOperators.text.filter(([value]) => !["any", "not_any"].includes(value))
+    : ruleOperators[type];
+  return operators.map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
+}
+function columnOptions(selected = "") {
+  return state.headers.map((key) => {
+    const type = inferColumnType(key), raw = columnInfo(key).rawHeader;
+    return `<option value="${escapeAttr(key)}" ${key === selected ? "selected" : ""} title="Raw header: ${escapeAttr(raw)}">${escapeHtml(columnLabel(key))} · ${typeLabel(type)}</option>`;
+  }).join("");
+}
+function renderRuleInputs(rule, type) {
+  const noValue = ["blank", "not_blank"].includes(rule.operator);
+  if (noValue) return "";
+  const definition = filterDefinition(rule.column);
+  if (type === "text" && ["any", "not_any"].includes(rule.operator) && definition?.lowCardinality) {
+    return `<label class="filter-search">Search values<input type="search" data-rule-search="${rule.id}" placeholder="Search options" /></label><div class="filter-option-actions"><button type="button" data-rule-select-all="${rule.id}">Select all</button><button type="button" data-rule-select-none="${rule.id}">Clear</button></div><div class="filter-option-list" data-rule-options="${rule.id}">${definition.options.map((option) => `<label data-option-label="${escapeAttr(option.label.toLocaleLowerCase())}"><input type="checkbox" data-rule-option="${rule.id}" value="${escapeAttr(option.key)}" ${rule.values.has(option.key) ? "checked" : ""}><span>${escapeHtml(option.label)}</span><small>${option.count.toLocaleString()}</small></label>`).join("")}</div>`;
+  }
+  const inputType = type === "date" ? "date" : "text",
+    placeholder = type === "postcode" && rule.operator === "one_of" ? "2000, 2007, 3000" : type === "numeric" ? "e.g. 10,000" : "Enter a value";
+  if (rule.operator === "between") return `<div class="filter-range"><label>Minimum<input data-rule-value="${rule.id}" type="${inputType}" value="${escapeAttr(rule.value)}" placeholder="Minimum"></label><label>Maximum<input data-rule-value2="${rule.id}" type="${inputType}" value="${escapeAttr(rule.value2)}" placeholder="Maximum"></label></div>`;
+  return `<label>Value<input data-rule-value="${rule.id}" type="${inputType}" value="${escapeAttr(rule.value)}" placeholder="${escapeAttr(placeholder)}"></label>`;
+}
+function renderFilterControls(message = "") {
+  $("filterControls").innerHTML = `${message ? `<div class="filter-rule-message" role="alert">${escapeHtml(message)}</div>` : ""}${filterDraftRules.length ? filterDraftRules.map((rule) => {
+    const type = inferColumnType(rule.column), definition = filterDefinition(rule.column);
+    if (type === "text" && !definition?.lowCardinality && ["any", "not_any"].includes(rule.operator)) rule.operator = "contains";
+    if (!ruleOperators[type].some(([operator]) => operator === rule.operator)) rule.operator = defaultOperator(rule.column);
+    return `<section class="filter-rule" data-filter-rule="${rule.id}"><div class="filter-rule-top"><label>Column<select data-rule-column="${rule.id}">${columnOptions(rule.column)}</select></label><button type="button" data-rule-remove="${rule.id}" aria-label="Remove ${escapeAttr(columnLabel(rule.column))} filter">Remove</button></div><label>Condition<select data-rule-operator="${rule.id}">${operatorOptions(type, rule.operator, definition)}</select></label>${renderRuleInputs(rule, type)}</section>`;
+  }).join("") : '<p class="field-help">No filter rules added. Add any populated column below.</p>'}`;
+  $("addFilterField").classList.remove("hidden");
+  $("addFilterColumn").innerHTML = `<option value="">Choose a column…</option>${columnOptions()}`;
+}
+function updateDraftRuleInput(target) {
+  const id = target.dataset.ruleColumn || target.dataset.ruleOperator || target.dataset.ruleValue || target.dataset.ruleValue2,
+    rule = filterDraftRules.find((item) => item.id === id);
+  if (!rule) return;
+  if (target.dataset.ruleColumn) {
+    rule.column = target.value; rule.operator = defaultOperator(rule.column); rule.value = ""; rule.value2 = ""; rule.values = new Set(); renderFilterControls();
+  } else if (target.dataset.ruleOperator) { rule.operator = target.value; rule.value = ""; rule.value2 = ""; rule.values = new Set(); renderFilterControls(); }
+  else if (target.dataset.ruleValue) rule.value = target.value;
+  else if (target.dataset.ruleValue2) rule.value2 = target.value;
+}
+function postcodePrefix(value) {
+  const digits = String(value ?? "").trim();
+  if (!/^\d{1,4}$/.test(digits)) return null;
+  return /^[89]/.test(digits) && digits.length < 4 ? `0${digits}` : digits;
+}
+function postcodeRuleValue(value) {
+  const digits = String(value ?? "").trim();
+  return /^\d{1,4}$/.test(digits) ? digits.padStart(4, "0") : null;
+}
+function validateRule(rule) {
+  const type = inferColumnType(rule.column), noValue = ["blank", "not_blank"].includes(rule.operator);
+  if (noValue || (type === "text" && ["any", "not_any"].includes(rule.operator) && filterDefinition(rule.column).lowCardinality)) return "";
+  if (type === "postcode") {
+    if (rule.operator === "one_of") return String(rule.value).split(/[,;\s]+/).filter(Boolean).every((value) => postcodeRuleValue(value)) ? "" : `${columnLabel(rule.column)} contains a malformed postcode.`;
+    if (rule.operator === "starts") return postcodePrefix(rule.value) ? "" : `${columnLabel(rule.column)} must start with one to four digits.`;
+    if (!postcodeRuleValue(rule.value) || (rule.operator === "between" && !postcodeRuleValue(rule.value2))) return `${columnLabel(rule.column)} requires a valid postcode value.`;
+  }
+  if (type === "numeric" && (numeric(rule.value) === null || (rule.operator === "between" && numeric(rule.value2) === null))) return `${columnLabel(rule.column)} requires a valid numeric value.`;
+  if (type === "date" && (!Number.isFinite(Date.parse(rule.value)) || (rule.operator === "between" && !Number.isFinite(Date.parse(rule.value2))))) return `${columnLabel(rule.column)} requires a valid date.`;
+  if (type === "text" && !String(rule.value).trim()) return `${columnLabel(rule.column)} requires a filter value.`;
+  return "";
+}
+function rowMatchesRule(row, rule) {
+  const raw = row[rule.column], type = inferColumnType(rule.column), operator = rule.operator;
+  if (operator === "blank") return blank(raw);
+  if (operator === "not_blank") return !blank(raw);
+  if (type === "postcode") {
+    const postcode = cleanPostcode(raw); if (!postcode) return false;
+    if (operator === "starts") return postcode.startsWith(postcodePrefix(rule.value));
+    if (operator === "one_of") return new Set(String(rule.value).split(/[,;\s]+/).filter(Boolean).map(postcodeRuleValue)).has(postcode);
+    const first = postcodeRuleValue(rule.value);
+    if (operator === "between") { const second = postcodeRuleValue(rule.value2); return postcode >= first && postcode <= second; }
+    return operator === "eq" ? postcode === first : postcode !== first;
+  }
+  if (type === "numeric") {
+    const value = numeric(raw); if (value === null) return false; const first = numeric(rule.value);
+    if (operator === "between") return value >= first && value <= numeric(rule.value2);
+    return ({ gt: value > first, gte: value >= first, lt: value < first, lte: value <= first, eq: value === first, neq: value !== first })[operator];
+  }
+  if (type === "date") {
+    const value = Date.parse(raw); if (!Number.isFinite(value)) return false; const first = Date.parse(rule.value);
+    if (operator === "between") return value >= first && value <= Date.parse(rule.value2);
+    return operator === "before" ? value < first : operator === "after" ? value > first : value === first;
+  }
+  const value = String(raw ?? "").trim().toLocaleLowerCase("en-AU"), expected = String(rule.value ?? "").trim().toLocaleLowerCase("en-AU"), key = normalisedFilterValue(raw);
+  if (operator === "any" || operator === "not_any") { if (!rule.values.size) return false; const included = rule.values.has(key); return operator === "any" ? included : !included; }
+  if (operator === "eq") return value === expected;
+  if (operator === "neq") return value !== expected;
+  if (operator === "contains") return value.includes(expected);
+  if (operator === "not_contains") return !value.includes(expected);
+  return value.startsWith(expected);
+}
+function applyFilters() {
+  state.filteredRows = state.rows.filter((row) => state.activeFilters.every((rule) => rowMatchesRule(row, rule)));
+  updateFilterContext(); renderFilterControls(); renderPreview(); renderValidation();
+  if (state.mapGenerated) buildMap();
+  else if (!state.filteredRows.length && state.activeFilters.length) clearMappedDisplay("No rows match the current filters.");
+  else {
+    $("emptyState").querySelector("strong").textContent = "Your heatmap will appear here";
+    $("emptyState").querySelector("span").textContent = "Choose your columns and generate the map when ready.";
+    $("displayMeta").textContent = state.activeFilters.length ? `${state.filteredRows.length.toLocaleString()} of ${state.rows.length.toLocaleString()} uploaded rows included` : "Upload data to begin";
+  }
+}
+function applyDraftFilters() {
+  for (const rule of filterDraftRules) { const error = validateRule(rule); if (error) { renderFilterControls(error); return; } }
+  state.activeFilters = filterDraftRules.filter((rule) => !(["any", "not_any"].includes(rule.operator) && rule.values.size === filterDefinition(rule.column).options.length)).map(cloneRule);
+  filterDraftRules = state.activeFilters.map(cloneRule); applyFilters();
+}
+function resetAllFilters() { state.activeFilters = []; filterDraftRules = []; applyFilters(); }
+function ruleDescription(rule) {
+  const operator = ruleOperators[inferColumnType(rule.column)].find(([value]) => value === rule.operator)?.[1] || rule.operator;
+  let value = rule.value;
+  if (["any", "not_any"].includes(rule.operator)) { const definition = filterDefinition(rule.column); value = definition.options.filter((option) => rule.values.has(option.key)).map((option) => option.label).slice(0, 3).join(", "); if (rule.values.size > 3) value += ` +${rule.values.size - 3} more`; }
+  if (rule.operator === "between") value = `${rule.value} and ${rule.value2}`;
+  return `${columnLabel(rule.column)} ${operator.toLocaleLowerCase()}${["blank", "not_blank"].includes(rule.operator) ? "" : ` ${value}`}`;
+}
+function filterExportNote() { const note = state.activeFilters.map(ruleDescription).join("; "); return note.length > 180 ? `${note.slice(0, 177)}…` : note; }
+function updateFilterContext() {
+  const included = state.filteredRows.length, uploaded = state.rows.length, countText = `${included.toLocaleString()} of ${uploaded.toLocaleString()} uploaded rows included`;
+  $("filterRowCount").textContent = countText; $("filterSectionStatus").textContent = state.activeFilters.length ? `${state.activeFilters.length} active · ${included.toLocaleString()} rows` : "All rows included";
+  $("resetFilters").disabled = !state.activeFilters.length; $("mapFilterContext").classList.toggle("hidden", !state.activeFilters.length); $("mapFilterRowCount").textContent = countText;
+  $("activeFilterChips").innerHTML = state.activeFilters.map((rule) => `<span class="filter-chip"><span>${escapeHtml(ruleDescription(rule))}</span><button type="button" data-clear-filter="${rule.id}" aria-label="Remove filter">×</button></span>`).join("");
+}
+$("filterControls").onchange = (event) => {
+  if (event.target.matches("[data-rule-option]")) { const rule = filterDraftRules.find((item) => item.id === event.target.dataset.ruleOption); if (event.target.checked) rule.values.add(event.target.value); else rule.values.delete(event.target.value); }
+  else updateDraftRuleInput(event.target);
+};
+$("filterControls").oninput = (event) => {
+  if (event.target.matches("[data-rule-search]")) { const query = event.target.value.toLocaleLowerCase(); $("filterControls").querySelectorAll(`[data-rule-options="${event.target.dataset.ruleSearch}"] [data-option-label]`).forEach((label) => { label.hidden = !label.dataset.optionLabel.includes(query); }); }
+  else updateDraftRuleInput(event.target);
+};
+$("filterControls").onclick = (event) => {
+  const remove = event.target.closest("[data-rule-remove]"), all = event.target.closest("[data-rule-select-all]"), none = event.target.closest("[data-rule-select-none]");
+  if (remove) { filterDraftRules = filterDraftRules.filter((rule) => rule.id !== remove.dataset.ruleRemove); renderFilterControls(); }
+  else if (all || none) { const id = (all || none).dataset.ruleSelectAll || (all || none).dataset.ruleSelectNone, rule = filterDraftRules.find((item) => item.id === id), definition = filterDefinition(rule.column); rule.values = all ? new Set(definition.options.map((option) => option.key)) : new Set(); renderFilterControls(); }
+};
+$("addFilterColumn").onchange = () => { if ($("addFilterColumn").value) { filterDraftRules.push(newFilterRule($("addFilterColumn").value)); renderFilterControls(); } };
+$("applyFiltersButton").onclick = applyDraftFilters;
+$("resetFilters").onclick = resetAllFilters;
+$("clearAllMapFilters").onclick = resetAllFilters;
+$("activeFilterChips").onclick = (event) => { const button = event.target.closest("[data-clear-filter]"); if (!button) return; state.activeFilters = state.activeFilters.filter((rule) => rule.id !== button.dataset.clearFilter); filterDraftRules = state.activeFilters.map(cloneRule); applyFilters(); };
 function normalisedHeader(header) {
-  return String(header)
+  return String(columnLabel(header))
     .toLowerCase()
     .replace(/[_-]+/g, " ")
     .replace(/\s+/g, " ")
@@ -558,15 +1149,15 @@ function suggestColumns(rows, headers) {
 }
 function renderPreview() {
   const detail = state.importDetail,
-    rows = state.rows.slice(0, 10),
+    rows = analysisRows().slice(0, 10),
     headers = state.headers,
     confidence = state.columnConfidenceLow
       ? '<br><span class="selection-warning">Please confirm these columns.</span>'
       : "<br>Suggested from headings and sample values.";
   $("previewDetection").innerHTML =
-    `${detail ? `Excel header row: <b>${detail.headerRow}</b><br>` : ""}Postcode column: <b>${escapeHtml($("postcodeColumn").value)}</b><br>Value column: <b>${escapeHtml($("valueColumn").value)}</b>${confidence}`;
+    `${detail ? `Excel header row: <b>${detail.headerRow}</b><br>` : ""}Postcode column: <b>${escapeHtml(columnLabel($("postcodeColumn").value))}</b><br>Primary value column: <b>${escapeHtml(columnLabel($("valueColumn").value))}</b>${comparisonEnabled() ? `<br>Comparison value column: <b>${escapeHtml(columnLabel($("comparisonColumn").value))}</b><br>Map mode: <b>${escapeHtml(activeModeLabel())}</b>` : ""}${confidence}`;
   $("previewHead").innerHTML =
-    `<tr>${headers.map((h) => `<th title="${escapeAttr(h)}">${escapeHtml(h)}</th>`).join("")}</tr>`;
+    `<tr>${headers.map((h) => `<th title="Raw header: ${escapeAttr(columnInfo(h).rawHeader)}">${escapeHtml(columnLabel(h))}</th>`).join("")}</tr>`;
   $("previewBody").innerHTML = rows
     .map(
       (row) =>
@@ -574,18 +1165,68 @@ function renderPreview() {
     )
     .join("");
   $("previewToggle").textContent =
-    `Preview: ${rows.length.toLocaleString()} of ${state.rows.length.toLocaleString()} rows`;
+    `Preview: ${rows.length.toLocaleString()} of ${analysisRows().length.toLocaleString()} included rows`;
 }
+function updateMapModeLabels() {
+  const primary = columnLabel($("valueColumn").value) || "Primary value",
+    comparison = columnLabel($("comparisonColumn").value) || "Comparison value";
+  $("mapMode").querySelector('option[value="primary"]').textContent = primary;
+  $("mapMode").querySelector('option[value="comparison"]').textContent =
+    comparison;
+  if ($("valueLabel")) $("valueLabel").placeholder = `Automatic: ${automaticModeLabel()}`;
+}
+function updateComparisonControls() {
+  const enabled = $("comparisonEnabled").checked;
+  $("comparisonColumnField").classList.toggle("hidden", !enabled);
+  $("mapModeField").classList.toggle("hidden", !enabled);
+  $("comparisonReadiness").classList.toggle("hidden", !enabled);
+  if (!enabled) $("mapMode").value = "primary";
+  if (
+    enabled &&
+    $("comparisonColumn").value === $("valueColumn").value
+  ) {
+    const alternative = [...$("comparisonColumn").options].find(
+      (option) =>
+        option.value !== $("valueColumn").value &&
+        option.value !== $("postcodeColumn").value,
+    );
+    if (alternative) $("comparisonColumn").value = alternative.value;
+  }
+  $("aggregationHelp").textContent =
+    enabled && $("aggregation").value === "count"
+      ? "Count of valid rows is calculated independently for the primary and comparison columns; source values are not summed."
+      : "Rows with the same postcode will be combined using this method.";
+  updateMapModeLabels();
+}
+$("comparisonEnabled").onchange = () => {
+  updateComparisonControls();
+  renderPreview();
+  if (state.mapGenerated) buildMap();
+};
 $("postcodeColumn").onchange = () => {
+  renderFilterControls();
   renderPreview();
   renderValidation();
+  if (state.mapGenerated) buildMap();
 };
 $("valueColumn").onchange = () => {
-  if (!state.valueLabelEdited) $("valueLabel").value = $("valueColumn").value;
-  recommendScale();
+  if (!state.valueLabelEdited) $("valueLabel").value = "";
+  if (!state.mapGenerated) recommendScale();
   renderPreview();
   renderValidation();
   updatePresentation();
+  updateComparisonControls();
+  renderFilterControls();
+  if (state.mapGenerated) buildMap();
+};
+$("comparisonColumn").onchange = () => {
+  updateMapModeLabels();
+  renderFilterControls();
+  renderPreview();
+  if (state.mapGenerated) buildMap();
+};
+$("mapMode").onchange = () => {
+  applyScalePreferenceForMode();
   if (state.mapGenerated) buildMap();
 };
 function blank(v) {
@@ -616,7 +1257,7 @@ function numeric(v) {
 }
 function selectedNumericValues() {
   const column = $("valueColumn").value;
-  return state.rows
+  return analysisRows()
     .map((row) => numeric(row[column]))
     .filter((value) => value !== null)
     .sort((a, b) => a - b);
@@ -624,15 +1265,36 @@ function selectedNumericValues() {
 function recommendScale() {
   const values = selectedNumericValues();
   if (!values.length) return;
-  const mixed = values[0] < 0 && values[values.length - 1] > 0;
-  $("scaleMode").value = mixed ? "diverging" : "quantile";
-  if (mixed) {
-    $("paletteMode").value = "blue-red";
-    $("divergingCentre").value = "0";
-  } else if ($("paletteMode").value === "blue-red") {
+  $("scaleMode").value = "quantile";
+  if ($("paletteMode").value === "blue-red") {
     $("paletteMode").value = "green";
   }
+  saveScalePreference("raw");
   updateScaleControls(values);
+}
+function scalePreferenceGroup(mode = activeMapMode()) {
+  return mode === "absolute" || mode === "percentage" ? "change" : "raw";
+}
+function saveScalePreference(group = state.activeScalePreference) {
+  state.scalePreferences[group] = {
+    scaleMode: $("scaleMode").value,
+    palette: $("paletteMode").value,
+    classCount: $("classCount").value,
+    reverse: $("reversePalette").checked,
+    centre: $("divergingCentre").value,
+  };
+}
+function applyScalePreferenceForMode() {
+  saveScalePreference();
+  const group = scalePreferenceGroup(),
+    preference = state.scalePreferences[group];
+  state.activeScalePreference = group;
+  $("scaleMode").value = group === "change" ? "diverging" : preference.scaleMode;
+  $("paletteMode").value = group === "change" ? "blue-red" : preference.palette;
+  $("classCount").value = preference.classCount;
+  $("reversePalette").checked = preference.reverse;
+  $("divergingCentre").value = group === "change" ? "0" : preference.centre;
+  updateScaleControls();
 }
 function updateScaleControls(values = selectedNumericValues()) {
   if (!values.length) return false;
@@ -651,17 +1313,15 @@ function updateScaleControls(values = selectedNumericValues()) {
   $("classCountField").classList.toggle("hidden", mode === "continuous");
   $("divergingCentreField").classList.toggle("hidden", mode !== "diverging");
   const centre = Number($("divergingCentre").value);
-  if (
-    mode === "diverging" &&
-    !(Number.isFinite(centre) && min < centre && max > centre)
-  ) {
-    warning =
-      "Choose a centre with data values on both sides before using a diverging scale.";
+  if (mode === "diverging" && !Number.isFinite(centre)) {
+    warning = "Enter a valid centre for the diverging scale.";
+  } else if (mode === "diverging" && !(min < centre && max > centre)) {
+    warning = "All values are on one side of the selected centre; the unused half of the diverging palette is retained for context.";
   } else if (min < 0 && max > 0 && mode !== "diverging") {
     warning = "A diverging scale is recommended because the values cross zero.";
   }
   $("scaleWarning").textContent = warning;
-  return !(mode === "diverging" && !(min < centre && max > centre));
+  return !(mode === "diverging" && !Number.isFinite(centre));
 }
 
 function calculateValidation() {
@@ -675,7 +1335,8 @@ function calculateValidation() {
     invalidPostcodes = 0,
     blankValues = 0,
     nonNumericValues = 0;
-  state.rows.forEach((row, i) => {
+  const rows = analysisRows();
+  rows.forEach((row) => {
     const rawPostcode = row[pc],
       rawValue = row[val],
       postcodeBlank = blank(rawPostcode),
@@ -702,12 +1363,12 @@ function calculateValidation() {
       invalidRows.push({
         ...row,
         Reason: reasons.join("; "),
-        "Source row": i + 2,
+        "Source row": sourceRowNumber(row),
       });
       return;
     }
     counts.set(postcode, (counts.get(postcode) || 0) + 1);
-    validEntries.push({ row, postcode, value, sourceRow: i + 2 });
+    validEntries.push({ row, postcode, value, sourceRow: sourceRowNumber(row) });
   });
   const unique = [...submittedPostcodes],
     validCodes = state.geo
@@ -737,11 +1398,12 @@ function calculateValidation() {
       validCodes && unique.length ? (matchedCount / unique.length) * 100 : null,
     mappedRows = validCodes ? validEntries.length - unmatchedRows.length : null,
     mappedRowPercentage =
-      mappedRows !== null && state.rows.length
-        ? (mappedRows / state.rows.length) * 100
+      mappedRows !== null && rows.length
+        ? (mappedRows / rows.length) * 100
         : null;
   return {
-    totalRows: state.rows.length,
+    uploadedRows: state.rows.length,
+    totalRows: rows.length,
     validRows: validEntries.length,
     blankPostcodes,
     invalidPostcodes,
@@ -755,7 +1417,7 @@ function calculateValidation() {
     matchedPostcodes: validCodes ? matchedCount : null,
     mappedRows,
     mappedRowPercentage,
-    attentionRows: invalidRows.length,
+    attentionRows: new Set([...invalidRows, ...unmatchedRows].map((row) => row["Source row"])).size,
     invalidRows,
     unmatchedRows,
   };
@@ -763,39 +1425,31 @@ function calculateValidation() {
 function renderValidation() {
   const result = calculateValidation();
   state.validation = result;
-  const metrics = [
-    ["Total input rows", result.totalRows],
-    ["Valid rows", result.validRows],
-    ["Blank postcode rows", result.blankPostcodes],
-    ["Invalid postcode rows", result.invalidPostcodes],
-    ["Blank value rows", result.blankValues],
-    ["Non-numeric value rows", result.nonNumericValues],
-    ["Duplicate input rows", result.duplicateRows],
-    ["Postcodes affected by duplicates", result.duplicatePostcodes],
-    ["Unique valid postcodes", result.uniquePostcodes],
-    [
-      "Postcodes not matched to ABS geography",
-      result.unmatchedPostcodes === null
-        ? "Checking…"
-        : result.unmatchedPostcodes,
-    ],
-    [
-      "Valid postcode geography match",
-      result.matchedPercentage === null
-        ? "Checking…"
-        : result.uniquePostcodes === 0
-          ? "No valid postcodes"
-          : result.unmatchedPostcodes === 0
-            ? `${result.matchedPostcodes.toLocaleString()} of ${result.uniquePostcodes.toLocaleString()} matched`
-            : `${result.matchedPostcodes.toLocaleString()} of ${result.uniquePostcodes.toLocaleString()} matched (${result.matchedPercentage.toFixed(1)}%)`,
-    ],
-  ];
-  $("validationMetrics").innerHTML = metrics
-    .map(
-      ([label, value]) =>
-        `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`,
-    )
-    .join("");
+  const mappedPostcodes = state.mapGenerated ? state.values.size : null,
+    aggregation = aggregationLabels[$("aggregation").value],
+    group = (title, metrics, className = "") => `<section class="status-group ${className}"><h4>${escapeHtml(title)}</h4><dl>${metrics.map(([label, value]) => `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl></section>`;
+  $("validationMetrics").innerHTML =
+    group("Included in the analysis", [
+      ["Uploaded rows", result.uploadedRows.toLocaleString()],
+      ["Included after filters", result.totalRows.toLocaleString()],
+      ["Usable rows", result.mappedRows === null ? "Checking…" : result.mappedRows.toLocaleString()],
+      ["Mapped postcodes", mappedPostcodes === null ? "Not generated yet" : mappedPostcodes.toLocaleString()],
+    ]) +
+    group("Rows needing attention", [
+      ["Blank postcode rows", result.blankPostcodes.toLocaleString()],
+      ["Invalid postcode rows", result.invalidPostcodes.toLocaleString()],
+      ["Blank value rows", result.blankValues.toLocaleString()],
+      ["Non-numeric value rows", result.nonNumericValues.toLocaleString()],
+      ["Unmatched postcodes", result.unmatchedPostcodes === null ? "Checking…" : result.unmatchedPostcodes.toLocaleString()],
+      ["Unique excluded rows", result.attentionRows.toLocaleString()],
+    ], result.attentionRows ? "status-group-warning" : "") +
+    group("Geography matching", [["ABS geography", result.uniquePostcodes === 0 ? "No valid postcodes" : result.unmatchedPostcodes === 0 ? "All valid postcodes matched the ABS geography" : `${result.matchedPostcodes.toLocaleString()} of ${result.uniquePostcodes.toLocaleString()} valid postcodes matched`]], result.unmatchedPostcodes ? "status-group-warning" : "") +
+    group("Duplicate handling", [
+      ["Duplicate input rows", result.duplicateRows.toLocaleString()],
+      ["Postcodes affected", result.duplicatePostcodes.toLocaleString()],
+      ["Aggregation", aggregation],
+    ]);
+  state.statusAffectedRows = [...result.invalidRows, ...result.unmatchedRows];
   const geographyText =
       result.matchedPostcodes === null
         ? "Waiting for ABS geography"
@@ -809,7 +1463,9 @@ function renderValidation() {
         ? "Checking mapped rows…"
         : `${result.mappedRows.toLocaleString()} of ${result.totalRows.toLocaleString()} rows mapped`,
     usableText =
-      result.mappedRows === 0
+      result.totalRows === 0 && state.activeFilters.length
+        ? "No rows match the current filters"
+        : result.mappedRows === 0
         ? "No rows are usable"
         : result.mappedRowPercentage === null
           ? "Calculating usability…"
@@ -822,8 +1478,10 @@ function renderValidation() {
   $("validationOverview").className =
     `validation-overview validation-overview-${overviewTone}`;
   $("validationOverview").innerHTML =
-    `<div><strong>${escapeHtml(mappedText)}</strong><span>${escapeHtml(usableText)}</span></div><div><strong>Geography match</strong><span>${escapeHtml(geographyText)}</span></div><div><strong>${escapeHtml(attentionText)}</strong><span>${result.attentionRows ? "Invalid or missing input" : "No row-level input issues"}</span></div>`;
+    `<div><strong>${result.totalRows.toLocaleString()} rows included</strong><span>${escapeHtml(usableText)} · ${escapeHtml(attentionText)}</span></div>`;
   const warnings = [];
+  if (result.totalRows === 0 && state.activeFilters.length)
+    warnings.push("No rows match the current filters. Clear a filter or reset all filters to continue.");
   if (result.invalidRows.length)
     warnings.push(
       `${result.invalidRows.length.toLocaleString()} row${result.invalidRows.length === 1 ? " has" : "s have"} invalid or missing input.`,
@@ -843,18 +1501,36 @@ function renderValidation() {
     : '<div class="validation-ok">No validation warnings found.</div>';
   $("validationStatus").className =
     `validation-compact validation-compact-${overviewTone}`;
-  $("validationStatus").innerHTML =
-    result.mappedRows === null
-      ? "Checking rows"
-      : result.mappedRows === 0
-        ? `<span>No usable rows</span><span>${escapeHtml(attentionText)}</span>`
-        : `<span>${escapeHtml(mappedText)}</span><span>${escapeHtml(usableText)}</span><span>${escapeHtml(attentionText)}</span>`;
+  $("validationStatus").textContent = state.mapGenerated
+    ? `${state.values.size.toLocaleString()} postcodes mapped · ${attentionText}`
+    : result.mappedRows > 0
+      ? `${result.mappedRows.toLocaleString()} rows ready to map${result.attentionRows ? ` · ${attentionText}` : ""}`
+      : result.totalRows === 0 && state.activeFilters.length
+        ? "No rows match current filters"
+        : "No usable rows";
   $("validationStatus").setAttribute(
     "aria-label",
     `${mappedText}. ${usableText}. ${attentionText}. ${geographyText}.`,
   );
   $("downloadInvalid").disabled = !result.invalidRows.length;
   $("downloadValidationUnmatched").disabled = !result.unmatchedRows.length;
+  $("unmatchedPanel").classList.toggle("hidden", !state.statusAffectedRows.length);
+  renderUnmatchedPreview();
+  updateActionStatus();
+}
+
+function updateActionStatus() {
+  const result = state.validation,
+    usable = state.mapGenerated ? state.values.size : result?.mappedRows || 0;
+  $("buildButton").disabled = !usable;
+  $("buildButton").textContent = state.mapGenerated ? "Update map" : "Generate map";
+  $("actionStatus").textContent = !usable
+    ? state.activeFilters.length && !analysisRows().length
+      ? "No rows match current filters"
+      : "No usable rows"
+    : state.mapGenerated
+      ? `${state.values.size.toLocaleString()} postcodes mapped`
+      : `${usable.toLocaleString()} rows ready`;
 }
 
 $("buildButton").onclick = buildMap;
@@ -917,14 +1593,15 @@ wireInlineEditor("displayTitle", "mapTitle");
 wireInlineEditor("displaySubtitle", "mapSubtitle");
 wireInlineEditor("displaySource", "sourceNote");
 updatePresentation();
-$("valueLabel").oninput = () => {
-  state.valueLabelEdited = true;
+$("valueLabel").onchange = () => {
+  state.valueLabelEdited = Boolean($("valueLabel").value.trim());
+  $("valueLabel").value = $("valueLabel").value.trim();
   if (state.mapGenerated) buildMap();
 };
 const aggregationLabels = {
   sum: "Sum",
   avg: "Average",
-  count: "Count",
+  count: "Count of valid rows",
   min: "Minimum",
   max: "Maximum",
 };
@@ -961,19 +1638,174 @@ function formatValue(value) {
   if (mode === "percentage") return `${sign}${formatted}%`;
   return `${sign}${formatted}`;
 }
+function comparisonEnabled() {
+  return $("comparisonEnabled").checked;
+}
+function activeMapMode() {
+  return comparisonEnabled() ? $("mapMode").value : "primary";
+}
+function primaryLabel() {
+  return columnLabel($("valueColumn").value) || "Primary value";
+}
+function comparisonLabel() {
+  return columnLabel($("comparisonColumn").value) || "Comparison value";
+}
+function automaticModeLabel(mode = activeMapMode()) {
+  if (mode === "comparison") return comparisonLabel();
+  if (mode === "absolute") return "Absolute change";
+  if (mode === "percentage") return "Percentage change";
+  return primaryLabel();
+}
+function activeModeLabel(mode = activeMapMode()) {
+  return state.valueLabelEdited && currentValueLabel().trim()
+    ? currentValueLabel().trim()
+    : automaticModeLabel(mode);
+}
+function formatPercentageChange(value) {
+  if (!Number.isFinite(value)) return "Unavailable";
+  const decimals = Number($("decimalPlaces").value);
+  return new Intl.NumberFormat("en-AU", {
+    style: "percent",
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+    useGrouping: $("thousandsSeparator").checked,
+  }).format(value);
+}
+function formatActiveValue(value, mode = activeMapMode()) {
+  return mode === "percentage"
+    ? formatPercentageChange(value)
+    : formatValue(value);
+}
+function comparisonTooltip(postcode) {
+  const primary = state.primaryValues.get(postcode),
+    comparison = state.comparisonValues.get(postcode),
+    absolute = state.absoluteChanges.get(postcode),
+    percentage = state.percentageChanges.get(postcode),
+    row = (label, value, formatter = formatValue) =>
+      `<br>${escapeHtml(label)}: ${value === undefined ? "Unavailable" : escapeHtml(formatter(value))}`;
+  return (
+    `<br><span class="tooltip-direction">Change direction: ${escapeHtml(comparisonLabel())} minus ${escapeHtml(primaryLabel())}</span>` +
+    row(primaryLabel(), primary) +
+    row(comparisonLabel(), comparison) +
+    row("Absolute change", absolute) +
+    row("Percentage change", percentage, formatPercentageChange)
+  );
+}
+function activeLegendLabel() {
+  const mode = activeMapMode(),
+    aggregation = aggregationLabels[$("aggregation").value];
+  if (mode === "absolute" || mode === "percentage")
+    return `${activeModeLabel(mode)} (${comparisonLabel()} minus ${primaryLabel()})`;
+  return `${activeModeLabel(mode)} · ${aggregation}`;
+}
+function aggregateSeries(column, postcodeColumn, method, validCodes) {
+  const buckets = new Map();
+  analysisRows().forEach((row) => {
+    const postcode = cleanPostcode(row[postcodeColumn]),
+      value = numeric(row[column]);
+    if (!postcode || value === null) return;
+    if (!buckets.has(postcode)) buckets.set(postcode, []);
+    buckets.get(postcode).push(value);
+  });
+  const result = new Map();
+  buckets.forEach((values, postcode) => {
+    if (validCodes.has(postcode))
+      result.set(postcode, aggregateValues(values, method));
+  });
+  return result;
+}
+function calculateComparisonSeries() {
+  const absolute = new Map(),
+    percentage = new Map();
+  let both = 0,
+    primaryOnly = 0,
+    comparisonOnly = 0,
+    zeroPrimary = 0;
+  const postcodes = new Set([
+    ...state.primaryValues.keys(),
+    ...state.comparisonValues.keys(),
+  ]);
+  postcodes.forEach((postcode) => {
+    const hasPrimary = state.primaryValues.has(postcode),
+      hasComparison = state.comparisonValues.has(postcode);
+    if (hasPrimary && hasComparison) {
+      both += 1;
+      const primary = state.primaryValues.get(postcode),
+        comparison = state.comparisonValues.get(postcode),
+        difference = comparison - primary;
+      absolute.set(postcode, difference);
+      if (primary === 0) zeroPrimary += 1;
+      else percentage.set(postcode, difference / primary);
+    } else if (hasPrimary) primaryOnly += 1;
+    else comparisonOnly += 1;
+  });
+  state.absoluteChanges = absolute;
+  state.percentageChanges = percentage;
+  state.comparisonReadiness = {
+    both,
+    primaryOnly,
+    comparisonOnly,
+    unavailableOneSide: primaryOnly + comparisonOnly,
+    zeroPrimary,
+  };
+}
+function renderComparisonReadiness() {
+  if (!comparisonEnabled() || !state.comparisonReadiness) return;
+  const result = state.comparisonReadiness;
+  $("comparisonReadinessSummary").textContent =
+    `${result.both.toLocaleString()} postcodes compared · ${result.unavailableOneSide.toLocaleString()} unavailable because one side is missing · ${result.zeroPrimary.toLocaleString()} percentage changes unavailable because baseline equals zero`;
+  $("comparisonReadinessMetrics").innerHTML = [
+    ["Postcodes with both values", result.both],
+    ["Baseline only", result.primaryOnly],
+    ["Comparison only", result.comparisonOnly],
+    ["Baseline equals zero", result.zeroPrimary],
+  ]
+    .map(([label, value]) => `<div><strong>${value.toLocaleString()}</strong><span>${escapeHtml(label)}</span></div>`)
+    .join("");
+}
 function renderPinnedDetail() {
   const postcode = state.pinnedPostcode;
   if (!postcode || !state.values.has(postcode)) {
     $("pinnedDetail").classList.add("hidden");
     return;
   }
-  const aggLabel = aggregationLabels[$("aggregation").value],
-    valueLabel = currentValueLabel(),
-    label = valueLabel ? `${valueLabel} · ${aggLabel}` : aggLabel;
+  const label = activeLegendLabel();
   $("pinnedPostcode").textContent = `Postcode ${postcode}`;
   $("pinnedValue").textContent =
-    `${label}: ${formatValue(state.values.get(postcode))}`;
+    `${label}: ${formatActiveValue(state.values.get(postcode))}`;
   $("pinnedDetail").classList.remove("hidden");
+}
+function clearMappedDisplay(message) {
+  state.values = new Map();
+  state.primaryValues = new Map();
+  state.comparisonValues = new Map();
+  state.absoluteChanges = new Map();
+  state.percentageChanges = new Map();
+  if (!analysisRows().length) {
+    state.comparisonReadiness = {
+      both: 0,
+      primaryOnly: 0,
+      comparisonOnly: 0,
+      unavailableOneSide: 0,
+      zeroPrimary: 0,
+    };
+    renderComparisonReadiness();
+  }
+  if (state.layer) {
+    map.removeLayer(state.layer);
+    state.layer = null;
+  }
+  $("legend").classList.add("hidden");
+  $("summary").classList.add("hidden");
+  $("mapInsights").classList.add("hidden");
+  $("pinnedDetail").classList.add("hidden");
+  $("exportButton").disabled = true;
+  const empty = $("emptyState");
+  empty.querySelector("strong").textContent = message;
+  empty.querySelector("span").textContent = "Adjust or reset the filters to include rows again.";
+  empty.classList.remove("hidden");
+  $("displayMeta").textContent = `${analysisRows().length.toLocaleString()} of ${state.rows.length.toLocaleString()} rows included`;
+  updateActionStatus();
 }
 function buildMap() {
   if (!state.geo)
@@ -984,46 +1816,63 @@ function buildMap() {
     val = $("valueColumn").value,
     agg = $("aggregation").value,
     aggLabel = aggregationLabels[agg],
-    buckets = new Map(),
     unmatched = [];
-  state.rows.forEach((row, i) => {
+  const rows = analysisRows();
+  if (!rows.length && state.activeFilters.length) {
+    clearMappedDisplay("No rows match the current filters.");
+    return;
+  }
+  rows.forEach((row) => {
     const p = cleanPostcode(row[pc]),
       n = numeric(row[val]);
     if (!p || n === null) {
       unmatched.push({
         ...row,
         _reason: !p ? "Invalid postcode" : "Invalid value",
-        _row: i + 2,
+        _row: sourceRowNumber(row),
       });
       return;
     }
-    if (!buckets.has(p)) buckets.set(p, []);
-    buckets.get(p).push(n);
   });
-  const values = new Map();
-  for (const [p, arr] of buckets) values.set(p, aggregateValues(arr, agg));
   const validCodes = new Set(
     state.geo.features.map((f) => String(f.properties.POA_CODE21)),
   );
-  for (const [p] of [...values])
+  const submittedPrimary = aggregateSeries(val, pc, agg, new Set(rows.map((row) => cleanPostcode(row[pc])).filter(Boolean)));
+  for (const [p] of submittedPrimary)
     if (!validCodes.has(p)) {
       unmatched.push({
         [pc]: p,
-        [val]: values.get(p),
+        [val]: submittedPrimary.get(p),
         _reason: "No matching Postal Area",
       });
-      values.delete(p);
     }
+  state.primaryValues = aggregateSeries(val, pc, agg, validCodes);
+  state.comparisonValues = comparisonEnabled()
+    ? aggregateSeries($("comparisonColumn").value, pc, agg, validCodes)
+    : new Map();
+  calculateComparisonSeries();
+  const series = {
+    primary: state.primaryValues,
+    comparison: state.comparisonValues,
+    absolute: state.absoluteChanges,
+    percentage: state.percentageChanges,
+  };
+  const values = series[activeMapMode()] || state.primaryValues;
   state.values = values;
   state.unmatched = unmatched;
+  renderComparisonReadiness();
   const nums = [...values.values()].sort((a, b) => a - b);
-  if (!nums.length)
+  if (!nums.length) {
+    clearMappedDisplay("No usable rows are available for this map view.");
     return alert(
-      "No valid postcode and value pairs were found. Please check the selected columns and validation summary.",
+      activeMapMode() === "percentage" && state.comparisonReadiness?.zeroPrimary
+        ? "Percentage change is unavailable because no compared postcode has a non-zero primary value."
+        : "No valid postcode and value pairs were found for this map mode. Please check the selected columns and comparison summary.",
     );
+  }
   if (!updateScaleControls(nums))
     return alert(
-      "The diverging centre must have data values on both sides. Please adjust the centre or choose another scale.",
+      "The selected scale cannot be used with these values. Please choose another scale.",
     );
   const scaleMode = $("scaleMode").value,
     centre = Number($("divergingCentre").value),
@@ -1043,12 +1892,13 @@ function buildMap() {
   );
   state.breaks = makeBreaks(nums, scaleMode, classCount, centre);
   if (state.layer) map.removeLayer(state.layer);
-  if (state.noDataLayer) map.removeLayer(state.noDataLayer);
-  state.noDataLayer = L.geoJSON(state.geo, {
-    renderer: L.svg({ padding: 0.5 }),
-    interactive: false,
-    style: noDataStyle(),
-  }).addTo(map);
+  if (state.noDataLayer) state.noDataLayer.setStyle(noDataStyle());
+  else
+    state.noDataLayer = L.geoJSON(state.geo, {
+      renderer: L.svg({ padding: 0.5 }),
+      interactive: false,
+      style: noDataStyle(),
+    }).addTo(map);
   state.layer = L.geoJSON(state.geo, {
     renderer: L.svg({ padding: 0.5 }),
     filter: (f) => values.has(String(f.properties.POA_CODE21)),
@@ -1056,10 +1906,9 @@ function buildMap() {
     onEachFeature: (f, l) => {
       const p = String(f.properties.POA_CODE21),
         v = values.get(p);
-      const valueLabel = currentValueLabel(),
-        label = valueLabel ? `${valueLabel} · ${aggLabel}` : aggLabel;
+      const label = activeLegendLabel();
       l.bindTooltip(
-        `<strong>Postcode ${p}</strong><br>${escapeHtml(label)}: <span class="tooltip-value">${escapeHtml(formatValue(v))}</span>`,
+        `<strong>Postcode ${p}</strong><br>${escapeHtml(label)}: <span class="tooltip-value">${escapeHtml(formatActiveValue(v))}</span>${comparisonEnabled() ? comparisonTooltip(p) : ""}`,
         { sticky: true },
       );
       l.on({
@@ -1090,28 +1939,37 @@ function buildMap() {
   $("exportButton").disabled = false;
   updatePresentation();
   $("displayMeta").textContent =
-    `${values.size.toLocaleString()} postcodes mapped · ${aggLabel}`;
+    `${values.size.toLocaleString()} postcodes mapped · ${analysisRows().length.toLocaleString()} of ${state.rows.length.toLocaleString()} rows included · ${activeModeLabel()}${state.validation.attentionRows ? ` · ${state.validation.attentionRows.toLocaleString()} rows excluded` : ""}`;
   renderLegend();
   renderSummary();
   renderPinnedDetail();
 }
 $("aggregation").onchange = () => {
+  updateComparisonControls();
   renderValidation();
   if (state.mapGenerated) buildMap();
 };
 function scaleControlsChanged(event) {
+  const group = scalePreferenceGroup();
   if (event.target.id === "scaleMode") {
+    if (group === "change") $("scaleMode").value = "diverging";
+    if (group === "raw" && $("scaleMode").value === "diverging")
+      $("scaleMode").value = "quantile";
     if ($("scaleMode").value === "diverging")
       $("paletteMode").value = "blue-red";
     else if ($("paletteMode").value === "blue-red")
       $("paletteMode").value = "green";
   }
   if (event.target.id === "paletteMode") {
+    if (group === "change") $("paletteMode").value = "blue-red";
+    if (group === "raw" && $("paletteMode").value === "blue-red")
+      $("paletteMode").value = "green";
     if ($("paletteMode").value === "blue-red")
       $("scaleMode").value = "diverging";
     else if ($("scaleMode").value === "diverging")
       $("scaleMode").value = "quantile";
   }
+  saveScalePreference(group);
   const ready = updateScaleControls();
   if (state.mapGenerated && ready) buildMap();
 }
@@ -1167,13 +2025,14 @@ function makeBreaks(nums, mode, k, centre = 0) {
       Math.exp(start + ((end - start) * i) / k),
     );
   }
-  if (mode === "diverging")
-    return Array.from({ length: k + 1 }, (_, i) => {
-      const position = i / k;
-      return position <= 0.5
-        ? min + ((centre - min) * position) / 0.5
-        : centre + ((max - centre) * (position - 0.5)) / 0.5;
-    });
+  if (mode === "diverging") {
+    const span = Math.max(Math.abs(min - centre), Math.abs(max - centre));
+    if (span === 0) return Array(k + 1).fill(centre);
+    return Array.from(
+      { length: k + 1 },
+      (_, i) => centre - span + ((span * 2) * i) / k,
+    );
+  }
   return Array.from({ length: k + 1 }, (_, i) => min + ((max - min) * i) / k);
 }
 function continuousPosition(value) {
@@ -1222,35 +2081,58 @@ function wireLegendDrag() {
   L.DomEvent.disableScrollPropagation($("legend"));
 }
 function renderLegend() {
-  const aggLabel = aggregationLabels[$("aggregation").value],
-    valueLabel = currentValueLabel(),
-    label = valueLabel ? `${valueLabel} · ${aggLabel}` : aggLabel;
+  const label = activeLegendLabel();
   const entries =
     state.scaleMin === state.scaleMax
-      ? `<div class="legend-row"><span class="swatch" style="background:${state.palette[Math.floor(state.palette.length / 2)]}"></span><span>${escapeHtml(formatValue(state.scaleMin))}</span></div>`
+      ? `<div class="legend-row"><span class="swatch" style="background:${state.palette[Math.floor(state.palette.length / 2)]}"></span><span>${escapeHtml(formatActiveValue(state.scaleMin))}</span></div>`
       : state.palette
           .map(
             (c, i) =>
-              `<div class="legend-row"><span class="swatch" style="background:${c}"></span><span>${escapeHtml(formatValue(state.breaks[i]))} – ${escapeHtml(formatValue(state.breaks[i + 1]))}</span></div>`,
+              `<div class="legend-row"><span class="swatch" style="background:${c}"></span><span>${escapeHtml(formatActiveValue(state.breaks[i]))} – ${escapeHtml(formatActiveValue(state.breaks[i + 1]))}</span></div>`,
           )
           .join("");
   $("legend").innerHTML =
-    `<div class="legend-drag-handle" title="Drag to another corner">Drag legend</div><div class="legend-title">${escapeHtml(label)}</div>${entries}<div class="legend-row legend-no-data"><span class="swatch"></span><span>No data</span></div>`;
+    `<div class="legend-drag-handle" title="Drag to another corner">Drag legend</div><div class="legend-title"><button class="legend-title-button" type="button" aria-label="Edit value label"><span>${escapeHtml(label)}</span><span aria-hidden="true">✎</span></button></div>${entries}<div class="legend-row legend-no-data"><span class="swatch"></span><span>No data</span></div>`;
   $("legend").classList.remove("hidden");
   setLegendPosition(state.legendPosition);
   wireLegendDrag();
+  $("legend").querySelector(".legend-title-button").onclick = startLegendLabelEdit;
 }
+function startLegendLabelEdit() {
+  const container = $("legend").querySelector(".legend-title"),
+    original = currentValueLabel(),
+    input = document.createElement("input");
+  input.className = "legend-title-input";
+  input.setAttribute("aria-label", "Custom value label");
+  input.placeholder = `Automatic: ${activeModeLabel()}`;
+  input.value = state.valueLabelEdited ? original : "";
+  container.replaceChildren(input);
+  input.focus();
+  input.select();
+  let finished = false;
+  const finish = (save) => {
+    if (finished) return;
+    finished = true;
+    if (save) {
+      $("valueLabel").value = input.value.trim();
+      state.valueLabelEdited = Boolean($("valueLabel").value);
+      if (state.mapGenerated) buildMap();
+      else renderLegend();
+    } else renderLegend();
+  };
+  input.onkeydown = (event) => {
+    if (event.key === "Enter") { event.preventDefault(); finish(true); }
+    if (event.key === "Escape") { event.preventDefault(); finish(false); }
+  };
+  input.onblur = () => finish(true);
+}
+$("resetValueLabel").onclick = () => {
+  $("valueLabel").value = "";
+  state.valueLabelEdited = false;
+  if (state.mapGenerated) buildMap();
+};
 function renderSummary() {
-  const vals = [...state.values.values()],
-    total = vals.reduce((a, b) => a + b, 0),
-    aggLabel = aggregationLabels[$("aggregation").value],
-    valueLabel = currentValueLabel(),
-    label = valueLabel ? `${valueLabel} · ${aggLabel}` : aggLabel;
-  $("summary").innerHTML =
-    `<b>${state.values.size.toLocaleString()}</b> postcodes mapped<br>${escapeHtml(label)} result total: ${escapeHtml(formatValue(total))}<br>${state.unmatched.length.toLocaleString()} unmatched rows`;
-  $("summary").classList.remove("hidden");
-  $("unmatchedPanel").classList.toggle("hidden", !state.unmatched.length);
-  renderUnmatchedPreview();
+  renderValidation();
   renderInsights();
 }
 function renderInsights() {
@@ -1274,17 +2156,28 @@ function renderInsights() {
         : state.validation.uniquePostcodes
           ? `${geographyPercentage.toFixed(1)}%`
           : "No valid postcodes",
+    mode = activeMapMode(),
+    isChange = mode === "absolute" || mode === "percentage",
+    lowest = [...ranked].sort((a, b) => a[1] - b[1])[0],
     metricLabels = {
       total: isCount ? "Total mapped count" : "Total mapped value",
       highest: isCount ? "Highest-count postcode" : "Highest-value postcode",
       median: isCount ? "Median postcode count" : "Median postcode value",
     };
-  $("insightMetrics").innerHTML = [
-    [metricLabels.total, formatValue(total)],
+  $("insightMetrics").innerHTML = (isChange
+    ? [
+        [mode === "percentage" ? "Total percentage change" : "Total change", mode === "percentage" ? "Not additive" : formatActiveValue(total)],
+        ["Compared postcodes", state.values.size.toLocaleString()],
+        ["Largest increase", `Postcode ${highest[0]} · ${formatActiveValue(highest[1])}`],
+        ["Largest decrease", `Postcode ${lowest[0]} · ${formatActiveValue(lowest[1])}`],
+        ["Median change", formatActiveValue(median)],
+      ]
+    : [
+    [metricLabels.total, formatActiveValue(total)],
     ["Mapped postcodes", state.values.size.toLocaleString()],
-    [metricLabels.highest, `Postcode ${highest[0]} · ${formatValue(highest[1])}`],
-    [metricLabels.median, formatValue(median)],
-  ]
+    [metricLabels.highest, `Postcode ${highest[0]} · ${formatActiveValue(highest[1])}`],
+    [metricLabels.median, formatActiveValue(median)],
+  ])
     .map(
       ([label, value]) =>
         `<div class="insight-metric"><span title="${escapeAttr(label)}">${escapeHtml(label)}</span><strong title="${escapeAttr(value)}">${escapeHtml(value)}</strong></div>`,
@@ -1298,13 +2191,17 @@ function renderInsights() {
     .slice(0, 5)
     .map(([postcode, value], index) => {
       const share = !hasNegative && total !== 0 ? (value / total) * 100 : null;
-      return `<li><button type="button" data-insight-postcode="${escapeAttr(postcode)}" aria-label="Zoom to postcode ${escapeAttr(postcode)}, ranked ${index + 1}, ${escapeAttr(formatValue(value))}${share === null ? "" : `, ${share.toFixed(1)} percent of total`}"><span class="rank-number">${index + 1}</span><strong class="rank-postcode">${escapeHtml(postcode)}</strong><span class="rank-value">${escapeHtml(formatValue(value))}</span>${share === null ? "" : `<span class="rank-share">${share.toFixed(1)}% of total</span>`}</button></li>`;
+      return `<li><button type="button" data-insight-postcode="${escapeAttr(postcode)}" aria-label="Zoom to postcode ${escapeAttr(postcode)}, ranked ${index + 1}, ${escapeAttr(formatActiveValue(value))}${share === null ? "" : `, ${share.toFixed(1)} percent of total`}"><span class="rank-number">${index + 1}</span><strong class="rank-postcode">${escapeHtml(postcode)}</strong><span class="rank-value">${escapeHtml(formatActiveValue(value))}</span>${share === null ? "" : `<span class="rank-share">${share.toFixed(1)}% of total</span>`}</button></li>`;
     })
     .join("");
   $("topShareLabel").textContent = isCount
     ? "Top 10 share of count"
     : "Top 10 share of total";
-  if (hasNegative) {
+  if (mode === "percentage") {
+    $("topShareValue").textContent = "Not calculated";
+    $("insightsNote").textContent =
+      "Percentage changes use different postcode baselines, so they are not added or used for concentration shares.";
+  } else if (hasNegative) {
     $("topShareValue").textContent = "Not calculated";
     $("insightsNote").textContent =
       "Top 10 share is not shown because negative values make concentration percentages misleading.";
@@ -1363,14 +2260,15 @@ document.addEventListener("keydown", (event) => {
   }
 });
 function renderUnmatchedPreview() {
-  const rows = state.unmatched.slice(0, 10);
+  const sourceRows = state.statusAffectedRows,
+    rows = sourceRows.slice(0, 10);
   if (!rows.length) return;
   const fields = [...new Set(rows.flatMap((row) => Object.keys(row)))],
     labels = { _reason: "Reason", _row: "Source row" };
   $("unmatchedPreviewCount").textContent =
-    `First ${rows.length} of ${state.unmatched.length.toLocaleString()}`;
+    `First ${rows.length} of ${sourceRows.length.toLocaleString()}`;
   $("unmatchedHead").innerHTML =
-    `<tr>${fields.map((field) => `<th title="${escapeAttr(labels[field] || field)}">${escapeHtml(labels[field] || field)}</th>`).join("")}</tr>`;
+    `<tr>${fields.map((field) => `<th title="${escapeAttr(labels[field] || outputColumnLabel(field))}">${escapeHtml(labels[field] || outputColumnLabel(field))}</th>`).join("")}</tr>`;
   $("unmatchedBody").innerHTML = rows
     .map(
       (row) =>
@@ -1379,15 +2277,15 @@ function renderUnmatchedPreview() {
     .join("");
 }
 $("downloadUnmatched").onclick = () => {
-  const csv = Papa.unparse(state.unmatched);
-  downloadBlob(new Blob([csv], { type: "text/csv" }), "unmatched-rows.csv");
+  const csv = Papa.unparse(userFacingRows(state.statusAffectedRows));
+  downloadBlob(new Blob([csv], { type: "text/csv" }), "affected-filtered-rows.csv");
 };
 $("downloadInvalid").onclick = () => {
-  const csv = Papa.unparse(state.validation.invalidRows);
+  const csv = Papa.unparse(userFacingRows(state.validation.invalidRows));
   downloadBlob(new Blob([csv], { type: "text/csv" }), "invalid-rows.csv");
 };
 $("downloadValidationUnmatched").onclick = () => {
-  const csv = Papa.unparse(state.validation.unmatchedRows);
+  const csv = Papa.unparse(userFacingRows(state.validation.unmatchedRows));
   downloadBlob(new Blob([csv], { type: "text/csv" }), "abs-unmatched-rows.csv");
 };
 $("closePinnedDetail").onclick = () => {
@@ -1639,7 +2537,8 @@ function exportLayout(context, width, height) {
   ).slice(0, 3);
   const titleHeight = titleLines.length * 36 * unit,
     subtitleHeight = $("mapSubtitle").value ? 27 * unit : 0,
-    headerHeight = Math.max(112 * unit, margin + titleHeight + subtitleHeight + 30 * unit),
+    headerMetadataLines = 1 + (comparisonEnabled() ? 1 : 0) + (state.activeFilters.length ? 1 : 0),
+    headerHeight = Math.max(136 * unit, margin + titleHeight + subtitleHeight + (36 + headerMetadataLines * 18) * unit),
     footerHeight = 52 * unit;
   return {
     unit,
@@ -1679,22 +2578,37 @@ function drawExportHeader(context, layout, width, transparent) {
   context.fillStyle = "#68736d";
   context.font = `500 ${13 * unit}px Inter, Arial, sans-serif`;
   context.fillText(
-    `${state.values.size.toLocaleString()} postcodes mapped · ${aggregationLabels[$("aggregation").value]}`,
+    `${state.values.size.toLocaleString()} postcodes mapped · ${activeModeLabel()} · ${aggregationLabels[$("aggregation").value]}`,
     margin,
     y + 3 * unit,
   );
+  if (comparisonEnabled()) {
+    context.fillText(
+      `${primaryLabel()} | ${comparisonLabel()}${activeMapMode() === "absolute" || activeMapMode() === "percentage" ? ` · change is ${comparisonLabel()} minus ${primaryLabel()}` : ""}`,
+      margin,
+      y + 21 * unit,
+    );
+  }
+  if (state.activeFilters.length) {
+    context.fillText(
+      `Filters: ${filterExportNote()}`,
+      margin,
+      y + (comparisonEnabled() ? 39 : 21) * unit,
+      width - margin * 2,
+    );
+  }
 }
 function legendRows() {
   if (state.scaleMin === state.scaleMax)
     return [
       {
         colour: state.palette[Math.floor(state.palette.length / 2)],
-        label: formatValue(state.scaleMin),
+        label: formatActiveValue(state.scaleMin),
       },
     ];
   return state.palette.map((colourValue, index) => ({
     colour: colourValue,
-    label: `${formatValue(state.breaks[index])} – ${formatValue(state.breaks[index + 1])}`,
+    label: `${formatActiveValue(state.breaks[index])} – ${formatActiveValue(state.breaks[index + 1])}`,
   }));
 }
 function drawExportLegend(context, rectangle, unit) {
@@ -1718,10 +2632,7 @@ function drawExportLegend(context, rectangle, unit) {
   context.textBaseline = "middle";
   context.fillStyle = "#17211d";
   context.font = `700 ${13 * unit}px Inter, Arial, sans-serif`;
-  const valueLabel = currentValueLabel(),
-    title = valueLabel
-      ? `${valueLabel} · ${aggregationLabels[$("aggregation").value]}`
-      : aggregationLabels[$("aggregation").value];
+  const title = activeLegendLabel();
   context.fillText(title, x + padding, y + padding + 7 * unit, width - padding * 2);
   let rowY = y + padding + 30 * unit;
   context.font = `400 ${11 * unit}px Inter, Arial, sans-serif`;

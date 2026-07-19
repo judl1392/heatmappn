@@ -557,6 +557,16 @@ footer {
 .workflow-action .primary {
   width: 100%;
 }
+.workflow-action small{display:block;margin-bottom:7px;color:var(--muted);font-size:11px;text-align:center}
+.controls{padding-bottom:84px}
+.status-groups{display:grid;gap:10px}.status-group{padding:9px;border-radius:9px;background:#f8f9f7}
+.status-group h4{margin:0 0 7px;font-size:12px}.status-group dl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 12px;margin:0;font-size:11px}
+.status-group dt{color:var(--muted)}.status-group dd{margin:0;font-weight:750;text-align:right;font-variant-numeric:tabular-nums}
+.status-group-warning{background:#fff8ed}.appearance-labels{display:grid;gap:7px;margin-top:5px;padding-top:9px;border-top:1px solid var(--line)}
+.appearance-labels>strong{font-size:12px}.appearance-labels button{justify-self:start}
+.legend-title-button{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-height:0;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:left}
+.legend-title-button:hover span:first-child{text-decoration:underline;text-decoration-style:dotted}.legend-title-button:focus-visible{outline:2px solid #557767;outline-offset:3px}
+.legend-title-input{width:100%;min-width:120px;padding:4px 6px;font:inherit}
 .dropzone {
   min-height: 142px;
 }
@@ -605,6 +615,46 @@ footer {
 .validation-overview-error > div:last-child {
   border-left-color: var(--warn);
 }
+.comparison-readiness {
+  margin-top: 13px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.comparison-readiness > strong {
+  font-size: 12px;
+}
+#comparisonReadinessSummary {
+  margin-top: 7px;
+  border-left: 3px solid #779888;
+  border-radius: 3px;
+  background: #f4f7f4;
+  padding: 7px 9px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.filter-heading,.filter-option-actions,.filter-popover-actions,.map-filter-context{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.filter-heading button,.filter-option-actions button,.filter-popover-actions button,.map-filter-context button,.filter-chip button{min-height:32px;padding:5px 9px}
+.filter-row-count{margin:9px 0;color:#53615a;font-size:12px}
+.filter-controls{display:grid;gap:8px}.filter-control{position:relative}
+.filter-control-button{width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;text-align:left;background:#f8faf8;border-color:#d7ded9}
+.filter-control-button span{font-weight:650}.filter-control-button small{color:#66736c;text-align:right}
+.filter-popover{margin-top:6px;padding:10px;border:1px solid #d7ded9;border-radius:10px;background:#fff;box-shadow:0 8px 24px rgba(31,47,39,.11)}
+.filter-search input{width:100%;margin-bottom:8px}.filter-option-actions{justify-content:flex-start;margin-bottom:6px}
+.filter-option-list{max-height:230px;overflow-y:auto;border-block:1px solid #edf0ed}
+.filter-option-list label{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:9px;padding:7px 2px}
+.filter-option-list small{color:#77827c}.filter-popover-actions{justify-content:flex-start;flex-wrap:wrap;margin-top:9px}
+.add-filter-field{display:grid;gap:5px;margin-top:12px}
+.map-filter-context{justify-content:flex-start;flex-wrap:wrap;padding:9px 13px;border-block:1px solid #e5e9e6;background:#fafbfa;color:#53615a;font-size:12px}
+.active-filter-chips{display:flex;flex-wrap:wrap;gap:6px}
+.filter-chip{display:inline-flex;align-items:center;gap:5px;max-width:min(100%,360px);padding-left:10px;border:1px solid #cfd9d3;border-radius:999px;background:#eef4f0;color:#29463a}
+.filter-chip>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.filter-chip button{border:0;background:transparent;font-size:16px}
+.map-filter-context>button{margin-left:auto}
+.filter-rule{display:grid;gap:8px;padding:10px;border:1px solid #d7ded9;border-radius:10px;background:#fbfcfb}
+.filter-rule+.filter-rule{margin-top:8px}.filter-rule-top{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end}
+.filter-rule label{display:grid;gap:4px}.filter-rule select,.filter-rule input{width:100%;min-width:0}
+.filter-range{display:grid;grid-template-columns:1fr 1fr;gap:8px}.filter-rule-message{padding:8px 10px;border-left:3px solid #b56b31;background:#fff7ed;color:#7c3f12}
+#applyFiltersButton{width:100%;margin-top:10px}
+@media(max-width:700px){.map-filter-context{align-items:flex-start}.active-filter-chips{width:100%}.filter-chip{max-width:100%}.map-filter-context>button{margin-left:0}}
 .validation-metrics {
   grid-template-columns: minmax(0, 1fr) auto;
 }
@@ -1020,6 +1070,7 @@ footer {
     position: static;
     max-height: none;
     overflow: visible;
+    padding-bottom: 0;
   }
   .workflow-section {
     overflow: hidden;
