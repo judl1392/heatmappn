@@ -18,6 +18,7 @@ const state = {
   scaleMax: 0,
   scaleCentre: 0,
   legendPosition: "bottom-right",
+  exportStyleRevision: 0,
   validation: { invalidRows: [], unmatchedRows: [] },
 };
 const $ = (id) => document.getElementById(id);
@@ -104,12 +105,22 @@ function applyAppearance() {
     `${Math.round(Number($("boundaryOpacity").value) * 100)}%`;
   if (state.noDataLayer) state.noDataLayer.setStyle(noDataStyle());
   if (state.layer) state.layer.setStyle(postcodeStyle);
+  state.exportStyleRevision++;
 }
 function selectBasemap() {
   Object.values(basemaps).forEach((layer) => map.removeLayer(layer));
   basemaps[$("basemapMode").value].addTo(map);
   basemapTileError = false;
   $("appearanceWarning").textContent = "";
+  updateTransparentExportOption();
+}
+function updateTransparentExportOption() {
+  const available = $("basemapMode").value === "none";
+  $("exportTransparent").disabled = !available;
+  if (!available) $("exportTransparent").checked = false;
+  $("transparentExportHelp").textContent = available
+    ? "Removes the page background while keeping map polygons and the legend."
+    : "Available when No basemap is selected.";
 }
 ["fillOpacity", "boundaryOpacity"].forEach((id) =>
   $(id).addEventListener("input", applyAppearance),
@@ -118,6 +129,7 @@ function selectBasemap() {
   (id) => ($(id).onchange = applyAppearance),
 );
 $("basemapMode").onchange = selectBasemap;
+updateTransparentExportOption();
 
 function setDisclosure(button, open) {
   const body = $(button.getAttribute("aria-controls"));
@@ -176,14 +188,16 @@ function searchPostcode() {
     return;
   }
   $("postcodeSearch").setCustomValidity("");
-  const feature = state.geo.features.find(
-    (item) => String(item.properties.POA_CODE21) === postcode,
-  );
-  if (!feature) {
+  if (!zoomToPostcode(postcode)) {
     $("postcodeSearch").setCustomValidity("This postcode is not in the ABS geography.");
     $("postcodeSearch").reportValidity();
-    return;
   }
+}
+function zoomToPostcode(postcode) {
+  const feature = state.geo?.features.find(
+    (item) => String(item.properties.POA_CODE21) === postcode,
+  );
+  if (!feature) return false;
   map.fitBounds(L.geoJSON(feature).getBounds(), {
     padding: [28, 28],
     maxZoom: 12,
@@ -196,6 +210,7 @@ function searchPostcode() {
       renderPinnedDetail();
     }
   });
+  return true;
 }
 $("searchPostcodeButton").onclick = searchPostcode;
 $("postcodeSearch").onkeydown = (event) => {
@@ -1236,7 +1251,117 @@ function renderSummary() {
   $("summary").classList.remove("hidden");
   $("unmatchedPanel").classList.toggle("hidden", !state.unmatched.length);
   renderUnmatchedPreview();
+  renderInsights();
 }
+function renderInsights() {
+  const ranked = [...state.values.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    ),
+    sortedValues = ranked.map((entry) => entry[1]).sort((a, b) => a - b),
+    total = sortedValues.reduce((sum, value) => sum + value, 0),
+    middle = Math.floor(sortedValues.length / 2),
+    median =
+      sortedValues.length % 2
+        ? sortedValues[middle]
+        : (sortedValues[middle - 1] + sortedValues[middle]) / 2,
+    highest = ranked[0],
+    aggregation = $("aggregation").value,
+    isCount = aggregation === "count",
+    geographyPercentage = state.validation.matchedPercentage,
+    geographyValue =
+      geographyPercentage === null
+        ? "Checking…"
+        : state.validation.uniquePostcodes
+          ? `${geographyPercentage.toFixed(1)}%`
+          : "No valid postcodes",
+    metricLabels = {
+      total: isCount ? "Total mapped count" : "Total mapped value",
+      highest: isCount ? "Highest-count postcode" : "Highest-value postcode",
+      median: isCount ? "Median postcode count" : "Median postcode value",
+    };
+  $("insightMetrics").innerHTML = [
+    [metricLabels.total, formatValue(total)],
+    ["Mapped postcodes", state.values.size.toLocaleString()],
+    [metricLabels.highest, `Postcode ${highest[0]} · ${formatValue(highest[1])}`],
+    [metricLabels.median, formatValue(median)],
+  ]
+    .map(
+      ([label, value]) =>
+        `<div class="insight-metric"><span title="${escapeAttr(label)}">${escapeHtml(label)}</span><strong title="${escapeAttr(value)}">${escapeHtml(value)}</strong></div>`,
+    )
+    .join("");
+  const hasNegative = sortedValues.some((value) => value < 0),
+    topTenTotal = ranked
+      .slice(0, 10)
+      .reduce((sum, entry) => sum + entry[1], 0);
+  $("topPostcodes").innerHTML = ranked
+    .slice(0, 5)
+    .map(([postcode, value], index) => {
+      const share = !hasNegative && total !== 0 ? (value / total) * 100 : null;
+      return `<li><button type="button" data-insight-postcode="${escapeAttr(postcode)}" aria-label="Zoom to postcode ${escapeAttr(postcode)}, ranked ${index + 1}, ${escapeAttr(formatValue(value))}${share === null ? "" : `, ${share.toFixed(1)} percent of total`}"><span class="rank-number">${index + 1}</span><strong class="rank-postcode">${escapeHtml(postcode)}</strong><span class="rank-value">${escapeHtml(formatValue(value))}</span>${share === null ? "" : `<span class="rank-share">${share.toFixed(1)}% of total</span>`}</button></li>`;
+    })
+    .join("");
+  $("topShareLabel").textContent = isCount
+    ? "Top 10 share of count"
+    : "Top 10 share of total";
+  if (hasNegative) {
+    $("topShareValue").textContent = "Not calculated";
+    $("insightsNote").textContent =
+      "Top 10 share is not shown because negative values make concentration percentages misleading.";
+  } else if (total === 0) {
+    $("topShareValue").textContent = "Not available";
+    $("insightsNote").textContent =
+      "Top 10 share is not available because the mapped total is zero.";
+  } else {
+    $("topShareValue").textContent = `${((topTenTotal / total) * 100).toFixed(1)}%`;
+    $("insightsNote").textContent = "";
+  }
+  $("insightsGeography").textContent = geographyValue;
+  $("mapInsights").classList.remove("hidden");
+  $("moreInsightsButton").classList.remove("hidden");
+}
+$("topPostcodes").onclick = (event) => {
+  const button = event.target.closest("[data-insight-postcode]");
+  if (!button) return;
+  $("postcodeSearch").value = button.dataset.insightPostcode;
+  zoomToPostcode(button.dataset.insightPostcode);
+};
+$("toggleHeadlineInsights").onclick = () => {
+  const expanded = $("toggleHeadlineInsights").getAttribute("aria-expanded") === "true";
+  $("toggleHeadlineInsights").setAttribute("aria-expanded", String(!expanded));
+  $("toggleHeadlineInsights").textContent = expanded
+    ? "Show insights"
+    : "Hide insights";
+  $("insightMetrics").classList.toggle("hidden", expanded);
+  $("mapInsights").classList.toggle("is-collapsed", expanded);
+};
+document.querySelector(".map-shell").append($("moreInsightsPanel"));
+function setMoreInsightsPanel(open) {
+  $("moreInsightsPanel").classList.toggle("hidden", !open);
+  $("moreInsightsButton").setAttribute("aria-expanded", String(open));
+  if (open) $("closeMoreInsights").focus();
+}
+$("moreInsightsButton").onclick = (event) => {
+  event.stopPropagation();
+  setMoreInsightsPanel(
+    $("moreInsightsButton").getAttribute("aria-expanded") !== "true",
+  );
+};
+$("closeMoreInsights").onclick = () => {
+  setMoreInsightsPanel(false);
+  $("moreInsightsButton").focus();
+};
+$("moreInsightsPanel").onclick = (event) => event.stopPropagation();
+document.addEventListener("click", () => setMoreInsightsPanel(false));
+document.addEventListener("keydown", (event) => {
+  if (
+    event.key === "Escape" &&
+    $("moreInsightsButton").getAttribute("aria-expanded") === "true"
+  ) {
+    setMoreInsightsPanel(false);
+    $("moreInsightsButton").focus();
+  }
+});
 function renderUnmatchedPreview() {
   const rows = state.unmatched.slice(0, 10);
   if (!rows.length) return;
@@ -1288,131 +1413,501 @@ function updateFormatControls() {
 $("customCurrencySymbol").oninput = () => {
   if (state.mapGenerated) buildMap();
 };
-let exportInProgress = false;
+function setExportOptions(open) {
+  if (exportInProgress && !open) return;
+  $("exportOptions").classList.toggle("hidden", !open);
+  $("exportButton").setAttribute("aria-expanded", String(open));
+  if (open) $("exportAspect").focus();
+}
+function setExportProgress(message, tone = "") {
+  $("exportProgress").textContent = message;
+  $("exportProgress").className = `export-progress${tone ? ` is-${tone}` : ""}`;
+}
+$("exportButton").setAttribute("aria-controls", "exportOptions");
+$("exportButton").setAttribute("aria-expanded", "false");
+$("exportButton").onclick = (event) => {
+  if (!state.mapGenerated || exportInProgress) return;
+  event.stopPropagation();
+  setExportOptions($("exportOptions").classList.contains("hidden"));
+};
+$("closeExportOptions").onclick = () => {
+  setExportOptions(false);
+  $("exportButton").focus();
+};
+$("exportOptions").onclick = (event) => event.stopPropagation();
+document.addEventListener("click", () => setExportOptions(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("exportOptions").classList.contains("hidden")) {
+    setExportOptions(false);
+    $("exportButton").focus();
+  }
+});
+let exportInProgress = false,
+  activeExportController = null,
+  exportViewportRevision = 0,
+  exportSvgCache = { key: "", svg: "" };
+const exportPresets = {
+  "16:9": {
+    standard: [1600, 900],
+    presentation: [1920, 1080],
+    high: [2560, 1440],
+    name: "16x9",
+  },
+  "4:3": {
+    standard: [1600, 1200],
+    presentation: [1920, 1440],
+    high: [2560, 1920],
+    name: "4x3",
+  },
+  "1:1": {
+    standard: [1200, 1200],
+    presentation: [1600, 1600],
+    high: [2200, 2200],
+    name: "square",
+  },
+};
+map.on("moveend zoomend resize", () => {
+  exportViewportRevision++;
+  exportSvgCache = { key: "", svg: "" };
+});
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
-async function prepareMapForExport() {
+function throwIfExportCancelled(signal) {
+  if (signal.aborted) throw new DOMException("Export cancelled", "AbortError");
+}
+async function yieldForExport(signal) {
+  await nextFrame();
+  throwIfExportCancelled(signal);
+}
+async function prepareMapForExport(signal) {
   map.invalidateSize({ pan: false, animate: false });
   [state.noDataLayer, state.layer].filter(Boolean).forEach((group) =>
     group.eachLayer((layer) => {
       if (typeof layer.redraw === "function") layer.redraw();
     }),
   );
-  await nextFrame();
-  await nextFrame();
-  await new Promise((resolve) => setTimeout(resolve, 350));
+  await yieldForExport(signal);
+  await yieldForExport(signal);
 }
-async function addExportOverlayImages(exportCard) {
-  const svgs = [...exportCard.querySelectorAll(".leaflet-overlay-pane svg")];
-  if (!svgs.length) throw new Error("Export SVG is not ready");
-  const urls = [];
-  for (const svg of svgs) {
-    const copy = svg.cloneNode(true);
-    copy.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    copy.removeAttribute("class");
-    copy.removeAttribute("style");
-    const image = document.createElement("img");
-    image.alt = "";
-    image.style.cssText = svg.style.cssText;
-    image.style.position = "absolute";
-    image.style.left = svg.style.left || "0";
-    image.style.top = svg.style.top || "0";
-    image.style.pointerEvents = "none";
-    image.width = Number(svg.getAttribute("width")) || svg.clientWidth;
-    image.height = Number(svg.getAttribute("height")) || svg.clientHeight;
-    const url = URL.createObjectURL(
-      new Blob([new XMLSerializer().serializeToString(copy)], {
-        type: "image/svg+xml",
-      }),
-    );
-    urls.push(url);
+function standaloneChoroplethSvg() {
+  const mapElement = $("map"),
+    mapBounds = mapElement.getBoundingClientRect(),
+    svgs = [...mapElement.querySelectorAll(".leaflet-overlay-pane svg")],
+    layerIdentity = `${state.noDataLayer?._leaflet_id || 0}:${state.layer?._leaflet_id || 0}`,
+    key = `${exportViewportRevision}:${state.exportStyleRevision}:${layerIdentity}:${mapBounds.width}:${mapBounds.height}`;
+  if (exportSvgCache.key === key) return exportSvgCache.svg;
+  if (!svgs.length) throw new Error("POSTCODE_LAYER_UNAVAILABLE");
+  const serializer = new XMLSerializer(),
+    nested = svgs
+      .map((svg) => {
+        const bounds = svg.getBoundingClientRect(),
+          copy = svg.cloneNode(true);
+        copy.setAttribute("x", String(bounds.left - mapBounds.left));
+        copy.setAttribute("y", String(bounds.top - mapBounds.top));
+        copy.setAttribute("width", String(bounds.width));
+        copy.setAttribute("height", String(bounds.height));
+        copy.removeAttribute("class");
+        copy.removeAttribute("style");
+        return serializer.serializeToString(copy);
+      })
+      .join("");
+  exportSvgCache = {
+    key,
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${mapBounds.width}" height="${mapBounds.height}" viewBox="0 0 ${mapBounds.width} ${mapBounds.height}">${nested}</svg>`,
+  };
+  return exportSvgCache.svg;
+}
+async function rasteriseChoropleth(signal) {
+  const blob = new Blob([standaloneChoroplethSvg()], {
+    type: "image/svg+xml;charset=utf-8",
+  });
+  throwIfExportCancelled(signal);
+  const url = URL.createObjectURL(blob),
+    image = new Image();
+  try {
     image.src = url;
-    await new Promise((resolve, reject) => {
-      image.onload = resolve;
-      image.onerror = reject;
-    });
-    svg.parentNode.insertBefore(image, svg);
-    svg.style.visibility = "hidden";
+    await image.decode();
+    throwIfExportCancelled(signal);
+    return { image, cleanup: () => URL.revokeObjectURL(url) };
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
   }
-  return urls;
 }
-$("exportButton").onclick = async () => {
+async function visibleBasemapCanvas(signal) {
+  const mapElement = $("map"),
+    mapBounds = mapElement.getBoundingClientRect(),
+    tiles = [...mapElement.querySelectorAll(".leaflet-tile-pane img")].filter(
+      (tile) => {
+        const bounds = tile.getBoundingClientRect(),
+          style = getComputedStyle(tile);
+        return (
+          bounds.right > mapBounds.left &&
+          bounds.left < mapBounds.right &&
+          bounds.bottom > mapBounds.top &&
+          bounds.top < mapBounds.bottom &&
+          style.display !== "none" &&
+          style.visibility !== "hidden"
+        );
+      },
+    ),
+    deadline = performance.now() + 1500;
+  while (
+    tiles.some((tile) => !tile.complete || !tile.naturalWidth) &&
+    performance.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    throwIfExportCancelled(signal);
+  }
+  if (!tiles.length || tiles.some((tile) => !tile.complete || !tile.naturalWidth))
+    throw new Error("BASEMAP_TILES_UNAVAILABLE");
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(mapBounds.width);
+  canvas.height = Math.ceil(mapBounds.height);
+  const context = canvas.getContext("2d");
+  for (let index = 0; index < tiles.length; index++) {
+    const tile = tiles[index],
+      bounds = tile.getBoundingClientRect();
+    context.drawImage(
+      tile,
+      bounds.left - mapBounds.left,
+      bounds.top - mapBounds.top,
+      bounds.width,
+      bounds.height,
+    );
+    if (index % 8 === 7) await yieldForExport(signal);
+  }
+  try {
+    context.getImageData(0, 0, 1, 1);
+  } catch {
+    canvas.width = canvas.height = 1;
+    throw new DOMException("Basemap CORS restriction", "SecurityError");
+  }
+  return canvas;
+}
+function drawImageCover(context, image, rectangle) {
+  const sourceWidth = image.width,
+    sourceHeight = image.height,
+    scale = Math.max(
+      rectangle.width / sourceWidth,
+      rectangle.height / sourceHeight,
+    ),
+    sourceCropWidth = rectangle.width / scale,
+    sourceCropHeight = rectangle.height / scale,
+    sourceX = (sourceWidth - sourceCropWidth) / 2,
+    sourceY = (sourceHeight - sourceCropHeight) / 2;
+  context.drawImage(
+    image,
+    sourceX,
+    sourceY,
+    sourceCropWidth,
+    sourceCropHeight,
+    rectangle.x,
+    rectangle.y,
+    rectangle.width,
+    rectangle.height,
+  );
+}
+function wrappedCanvasLines(context, text, maxWidth) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean),
+    lines = [];
+  let line = "";
+  words.forEach((word) => {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && context.measureText(candidate).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else line = candidate;
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+function roundedCanvasRect(context, x, y, width, height, radius) {
+  context.beginPath();
+  context.roundRect(x, y, width, height, radius);
+  context.fill();
+}
+function exportLayout(context, width, height) {
+  const unit = Math.max(0.8, Math.min(1.45, width / 1600)),
+    margin = 34 * unit;
+  context.font = `700 ${30 * unit}px Inter, Arial, sans-serif`;
+  const titleLines = wrappedCanvasLines(
+    context,
+    $("mapTitle").value,
+    width - margin * 2,
+  ).slice(0, 3);
+  const titleHeight = titleLines.length * 36 * unit,
+    subtitleHeight = $("mapSubtitle").value ? 27 * unit : 0,
+    headerHeight = Math.max(112 * unit, margin + titleHeight + subtitleHeight + 30 * unit),
+    footerHeight = 52 * unit;
+  return {
+    unit,
+    margin,
+    titleLines,
+    headerHeight,
+    footerHeight,
+    map: {
+      x: 0,
+      y: headerHeight,
+      width,
+      height: height - headerHeight - footerHeight,
+    },
+  };
+}
+function drawExportHeader(context, layout, width, transparent) {
+  if (!transparent) {
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, layout.headerHeight);
+  }
+  const { unit, margin, titleLines } = layout;
+  context.fillStyle = "#17211d";
+  context.textAlign = "left";
+  context.textBaseline = "top";
+  context.font = `700 ${30 * unit}px Inter, Arial, sans-serif`;
+  let y = margin;
+  titleLines.forEach((line) => {
+    context.fillText(line, margin, y);
+    y += 36 * unit;
+  });
+  if ($("mapSubtitle").value) {
+    context.fillStyle = "#68736d";
+    context.font = `400 ${17 * unit}px Inter, Arial, sans-serif`;
+    context.fillText($("mapSubtitle").value, margin, y + 2 * unit);
+    y += 27 * unit;
+  }
+  context.fillStyle = "#68736d";
+  context.font = `500 ${13 * unit}px Inter, Arial, sans-serif`;
+  context.fillText(
+    `${state.values.size.toLocaleString()} postcodes mapped · ${aggregationLabels[$("aggregation").value]}`,
+    margin,
+    y + 3 * unit,
+  );
+}
+function legendRows() {
+  if (state.scaleMin === state.scaleMax)
+    return [
+      {
+        colour: state.palette[Math.floor(state.palette.length / 2)],
+        label: formatValue(state.scaleMin),
+      },
+    ];
+  return state.palette.map((colourValue, index) => ({
+    colour: colourValue,
+    label: `${formatValue(state.breaks[index])} – ${formatValue(state.breaks[index + 1])}`,
+  }));
+}
+function drawExportLegend(context, rectangle, unit) {
+  const rows = legendRows(),
+    padding = 14 * unit,
+    rowHeight = 23 * unit,
+    width = Math.min(310 * unit, rectangle.width * 0.36),
+    height = padding * 2 + 27 * unit + (rows.length + 1) * rowHeight,
+    gap = 18 * unit,
+    left = state.legendPosition.endsWith("left"),
+    top = state.legendPosition.startsWith("top"),
+    x = left ? rectangle.x + gap : rectangle.x + rectangle.width - width - gap,
+    y = top ? rectangle.y + gap : rectangle.y + rectangle.height - height - gap;
+  context.save();
+  context.fillStyle = "rgba(255,255,255,0.94)";
+  roundedCanvasRect(context, x, y, width, height, 9 * unit);
+  context.strokeStyle = "#d9ddd8";
+  context.lineWidth = Math.max(1, unit);
+  context.stroke();
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillStyle = "#17211d";
+  context.font = `700 ${13 * unit}px Inter, Arial, sans-serif`;
+  const valueLabel = currentValueLabel(),
+    title = valueLabel
+      ? `${valueLabel} · ${aggregationLabels[$("aggregation").value]}`
+      : aggregationLabels[$("aggregation").value];
+  context.fillText(title, x + padding, y + padding + 7 * unit, width - padding * 2);
+  let rowY = y + padding + 30 * unit;
+  context.font = `400 ${11 * unit}px Inter, Arial, sans-serif`;
+  rows.forEach((row) => {
+    context.fillStyle = row.colour;
+    context.fillRect(x + padding, rowY, 22 * unit, 12 * unit);
+    context.fillStyle = "#25302b";
+    context.fillText(row.label, x + padding + 31 * unit, rowY + 6 * unit);
+    rowY += rowHeight;
+  });
+  context.fillStyle = "#dfe3e1";
+  context.fillRect(x + padding, rowY, 22 * unit, 12 * unit);
+  context.strokeStyle = "#a3ada8";
+  context.strokeRect(x + padding, rowY, 22 * unit, 12 * unit);
+  context.fillStyle = "#25302b";
+  context.fillText("No data", x + padding + 31 * unit, rowY + 6 * unit);
+  context.restore();
+}
+function drawExportFooter(context, layout, width, height, transparent) {
+  const y = height - layout.footerHeight;
+  if (!transparent) {
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, y, width, layout.footerHeight);
+  }
+  const source = $("sourceNote").value,
+    basemap = $("basemapMode").value,
+    basemapCredit =
+      basemap === "light"
+        ? " · Basemap © OpenStreetMap contributors © CARTO"
+        : basemap === "streets"
+          ? " · Basemap © OpenStreetMap contributors"
+          : "",
+    timestamp = $("exportTimestamp").checked
+      ? ` · Exported ${new Intl.DateTimeFormat("en-AU", { dateStyle: "medium", timeStyle: "short" }).format(new Date())}`
+      : "",
+    attribution = `ABS Postal Areas 2021 · Statistical geography${basemapCredit}${timestamp}`;
+  context.fillStyle = "#68736d";
+  context.textBaseline = "middle";
+  context.font = `400 ${11 * layout.unit}px Inter, Arial, sans-serif`;
+  context.textAlign = "left";
+  if (source) context.fillText(source, layout.margin, y + layout.footerHeight / 2);
+  context.textAlign = "right";
+  context.fillText(
+    attribution,
+    width - layout.margin,
+    y + layout.footerHeight / 2,
+    width * 0.68,
+  );
+}
+function canvasPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error("PNG_ENCODING_FAILED"))),
+        "image/png",
+      );
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+$("cancelExportButton").onclick = () => {
+  if (!activeExportController) return;
+  setExportProgress("Cancelling…");
+  activeExportController.abort();
+};
+$("confirmExportButton").onclick = async () => {
   if (exportInProgress || !state.mapGenerated) return;
-  const button = $("exportButton");
-  let exportStage = null;
-  let overlayUrls = [];
+  const aspect = $("exportAspect").value,
+    quality = $("exportQuality").value,
+    preset = exportPresets[aspect],
+    [width, height] = preset[quality],
+    pixelCount = width * height,
+    transparent =
+      $("basemapMode").value === "none" && $("exportTransparent").checked,
+    button = $("exportButton"),
+    confirmButton = $("confirmExportButton"),
+    closeButton = $("closeExportOptions"),
+    cancelButton = $("cancelExportButton"),
+    timings = {},
+    started = performance.now();
+  if (pixelCount > 10000000) {
+    setExportProgress(
+      "This preset exceeds the safe 10-million-pixel export limit.",
+      "error",
+    );
+    return;
+  }
+  let canvas = null,
+    basemapCanvas = null,
+    choropleth = null;
+  activeExportController = new AbortController();
+  const { signal } = activeExportController;
   exportInProgress = true;
   button.disabled = true;
+  confirmButton.disabled = true;
+  closeButton.disabled = true;
+  cancelButton.classList.remove("hidden");
   try {
-    await prepareMapForExport();
-    if ($("basemapMode").value !== "none" && basemapTileError)
-      throw new Error("BASEMAP_TILES_UNAVAILABLE");
-    const liveCard = document.querySelector(".map-card"),
-      liveOverlay = liveCard.querySelector(".leaflet-overlay-pane"),
-      livePaths = liveOverlay?.querySelectorAll("svg path").length || 0,
-      overlayStyle = liveOverlay ? getComputedStyle(liveOverlay) : null,
-      overlayVisible =
-        overlayStyle &&
-        overlayStyle.display !== "none" &&
-        overlayStyle.visibility !== "hidden" &&
-        overlayStyle.opacity !== "0";
-    if (!state.layer || !livePaths || !overlayVisible)
-      throw new Error("Map overlay is not ready");
+    let stageStarted = performance.now();
+    setExportProgress("Preparing map…");
+    await prepareMapForExport(signal);
+    timings.preparing = performance.now() - stageStarted;
 
-    exportStage = document.createElement("div");
-    exportStage.className = "export-stage";
-    const exportCard = liveCard.cloneNode(true),
-      width = Math.ceil(liveCard.getBoundingClientRect().width);
-    exportStage.style.width = `${width}px`;
-    exportCard.style.width = `${width}px`;
-    exportCard.querySelector("#exportButton")?.remove();
-    exportCard.querySelector(".leaflet-control-layers")?.remove();
-    const clonedOverlay = exportCard.querySelector(".leaflet-overlay-pane");
-    if (clonedOverlay) {
-      clonedOverlay.style.display = "block";
-      clonedOverlay.style.visibility = "visible";
-      clonedOverlay.style.opacity = "1";
-    }
-    exportStage.appendChild(exportCard);
-    document.body.appendChild(exportStage);
-    const clonedPaths = exportStage.querySelectorAll(
-      ".leaflet-overlay-pane svg path",
-    ).length;
-    if (!clonedPaths) throw new Error("Export overlay is not ready");
-    overlayUrls = await addExportOverlayImages(exportCard);
+    stageStarted = performance.now();
+    setExportProgress("Rendering postcode layer…");
+    await yieldForExport(signal);
+    choropleth = await rasteriseChoropleth(signal);
+    timings.postcodes = performance.now() - stageStarted;
 
-    await nextFrame();
-    await nextFrame();
-    const canvas = await html2canvas(exportCard, {
-      backgroundColor: "#ffffff",
-      logging: false,
-      scale: 2,
-      useCORS: true,
-    });
-    const blob = await new Promise((resolve, reject) =>
-      canvas.toBlob(
-        (result) =>
-          result ? resolve(result) : reject(new Error("PNG creation failed")),
-        "image/png",
-      ),
-    );
-    downloadBlob(blob, "postcode-heatmap.png");
-  } catch (error) {
     if ($("basemapMode").value !== "none") {
+      stageStarted = performance.now();
+      setExportProgress("Adding basemap…");
+      if (basemapTileError) throw new Error("BASEMAP_TILES_UNAVAILABLE");
+      basemapCanvas = await visibleBasemapCanvas(signal);
+      timings.basemap = performance.now() - stageStarted;
+    } else timings.basemap = 0;
+
+    stageStarted = performance.now();
+    setExportProgress("Adding labels and legend…");
+    await yieldForExport(signal);
+    canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d"),
+      layout = exportLayout(context, width, height);
+    context.clearRect(0, 0, width, height);
+    if (!transparent) {
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, width, height);
+    }
+    if (basemapCanvas) drawImageCover(context, basemapCanvas, layout.map);
+    else if (!transparent) {
+      context.fillStyle = "#edf1ed";
+      context.fillRect(layout.map.x, layout.map.y, layout.map.width, layout.map.height);
+    }
+    drawImageCover(context, choropleth.image, layout.map);
+    drawExportHeader(context, layout, width, transparent);
+    drawExportLegend(context, layout.map, layout.unit);
+    drawExportFooter(context, layout, width, height, transparent);
+    timings.composition = performance.now() - stageStarted;
+
+    stageStarted = performance.now();
+    setExportProgress("Creating PNG…");
+    await yieldForExport(signal);
+    const blob = await canvasPngBlob(canvas);
+    throwIfExportCancelled(signal);
+    timings.encoding = performance.now() - stageStarted;
+    timings.total = performance.now() - started;
+    state.lastExportTimings = timings;
+    downloadBlob(blob, `postcode-heatmap-${preset.name}-${quality}.png`);
+    setExportProgress(
+      `PNG ready (${width.toLocaleString()} × ${height.toLocaleString()} px) in ${(timings.total / 1000).toFixed(1)} seconds. Download started.`,
+      "success",
+    );
+  } catch (error) {
+    if (error.name === "AbortError") {
+      setExportProgress("Export cancelled.");
+    } else if (
+      $("basemapMode").value !== "none" &&
+      (error.message === "BASEMAP_TILES_UNAVAILABLE" ||
+        error.name === "SecurityError" ||
+        /cors|cross-origin|taint/i.test(error.message))
+    ) {
       $("appearanceWarning").textContent =
         "The selected basemap could not be included reliably because some map tiles were unavailable or blocked by browser security.";
-      alert(
-        "The PNG could not be created reliably with the selected basemap. Map tile providers and browser security can sometimes block image capture. Try again after the tiles load, or select No basemap.",
+      setExportProgress(
+        "Export failed: visible basemap tiles were unavailable or blocked by browser security. Select No basemap and try again.",
+        "error",
       );
     } else {
-      alert("The map export could not be created. Please try again.");
+      setExportProgress(
+        "Export failed. No image was downloaded. Try Standard quality or No basemap.",
+        "error",
+      );
     }
   } finally {
-    if (exportStage) exportStage.remove();
-    overlayUrls.forEach((url) => URL.revokeObjectURL(url));
+    choropleth?.cleanup();
+    if (basemapCanvas) basemapCanvas.width = basemapCanvas.height = 1;
+    if (canvas) canvas.width = canvas.height = 1;
+    activeExportController = null;
     exportInProgress = false;
     button.disabled = !state.mapGenerated;
+    confirmButton.disabled = false;
+    closeButton.disabled = false;
+    cancelButton.classList.add("hidden");
   }
 };
 function downloadBlob(blob, name) {
