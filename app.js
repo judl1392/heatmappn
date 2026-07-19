@@ -50,6 +50,12 @@ const state = {
   statusAffectedRows: [],
 };
 const $ = (id) => document.getElementById(id);
+const viewState = {
+  sidebarCollapsed: false,
+  focusMode: false,
+  focusRestore: null,
+  resizeTimer: null,
+};
 const paletteDefinitions = {
   blue: ["#eff6ff", "#3b82f6", "#172554"],
   green: ["#edf3ee", "#66967d", "#163e32"],
@@ -195,6 +201,17 @@ $("closeAppearance").onclick = () => {
   $("appearanceButton").focus();
 };
 $("appearancePopover").onclick = (event) => event.stopPropagation();
+document.querySelector(".map-shell").addEventListener(
+  "click",
+  (event) => {
+    if (
+      $("appearanceButton").getAttribute("aria-expanded") === "true" &&
+      !$("appearancePopover").contains(event.target)
+    )
+      setAppearancePopover(false);
+  },
+  true,
+);
 document.addEventListener("click", () => setAppearancePopover(false));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && $("appearanceButton").getAttribute("aria-expanded") === "true") {
@@ -247,6 +264,30 @@ $("postcodeSearch").onkeydown = (event) => {
 new ResizeObserver(() => map.invalidateSize({ pan: false })).observe(
   document.querySelector(".map-shell"),
 );
+function invalidateMapAfterLayout() {
+  clearTimeout(viewState.resizeTimer);
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      viewState.resizeTimer = setTimeout(
+        () => map.invalidateSize({ pan: false, animate: false }),
+        220,
+      );
+    }),
+  );
+}
+function setSidebarCollapsed(collapsed) {
+  viewState.sidebarCollapsed = collapsed;
+  $("workspace").classList.toggle("sidebar-collapsed", collapsed);
+  $("sidebarToggle").textContent = collapsed ? "Show controls" : "Hide controls";
+  $("sidebarToggle").setAttribute("aria-expanded", String(!collapsed));
+  $("sidebarToggle").setAttribute(
+    "aria-label",
+    collapsed ? "Show configuration controls" : "Hide configuration controls",
+  );
+  invalidateMapAfterLayout();
+}
+$("sidebarToggle").onclick = () =>
+  setSidebarCollapsed(!viewState.sidebarCollapsed);
 
 fetch("data/australia-postal-areas.geojson")
   .then((r) => {
@@ -2166,21 +2207,23 @@ function renderInsights() {
     };
   $("insightMetrics").innerHTML = (isChange
     ? [
-        [mode === "percentage" ? "Total percentage change" : "Total change", mode === "percentage" ? "Not additive" : formatActiveValue(total)],
-        ["Compared postcodes", state.values.size.toLocaleString()],
-        ["Largest increase", `Postcode ${highest[0]} · ${formatActiveValue(highest[1])}`],
-        ["Largest decrease", `Postcode ${lowest[0]} · ${formatActiveValue(lowest[1])}`],
-        ["Median change", formatActiveValue(median)],
+        { label: mode === "percentage" ? "Total percentage change" : "Total change", value: mode === "percentage" ? "Not additive" : formatActiveValue(total) },
+        { label: "Compared postcodes", value: state.values.size.toLocaleString() },
+        { label: "Largest increase", postcode: highest[0], value: formatActiveValue(highest[1]) },
+        { label: "Largest decrease", postcode: lowest[0], value: formatActiveValue(lowest[1]) },
+        { label: "Median change", value: formatActiveValue(median) },
       ]
     : [
-    [metricLabels.total, formatActiveValue(total)],
-    ["Mapped postcodes", state.values.size.toLocaleString()],
-    [metricLabels.highest, `Postcode ${highest[0]} · ${formatActiveValue(highest[1])}`],
-    [metricLabels.median, formatActiveValue(median)],
+    { label: metricLabels.total, value: formatActiveValue(total) },
+    { label: "Mapped postcodes", value: state.values.size.toLocaleString() },
+    { label: metricLabels.highest, postcode: highest[0], value: formatActiveValue(highest[1]) },
+    { label: metricLabels.median, value: formatActiveValue(median) },
   ])
     .map(
-      ([label, value]) =>
-        `<div class="insight-metric"><span title="${escapeAttr(label)}">${escapeHtml(label)}</span><strong title="${escapeAttr(value)}">${escapeHtml(value)}</strong></div>`,
+      ({ label, postcode, value }) => {
+        const accessibleValue = postcode ? `Postcode ${postcode}, ${value}` : value;
+        return `<div class="insight-metric"><span title="${escapeAttr(label)}">${escapeHtml(label)}</span><strong title="${escapeAttr(accessibleValue)}">${postcode ? `<span class="insight-postcode">Postcode ${escapeHtml(postcode)}</span><span class="insight-value">${escapeHtml(value)}</span>` : escapeHtml(value)}</strong></div>`;
+      },
     )
     .join("");
   const hasNegative = sortedValues.some((value) => value < 0),
@@ -2223,15 +2266,57 @@ $("topPostcodes").onclick = (event) => {
   $("postcodeSearch").value = button.dataset.insightPostcode;
   zoomToPostcode(button.dataset.insightPostcode);
 };
+function setHeadlineInsightsExpanded(expanded) {
+  $("toggleHeadlineInsights").setAttribute("aria-expanded", String(expanded));
+  $("toggleHeadlineInsights").textContent = expanded
+    ? "Hide insights"
+    : "Show insights";
+  $("insightMetrics").classList.toggle("hidden", !expanded);
+  $("mapInsights").classList.toggle("is-collapsed", !expanded);
+  invalidateMapAfterLayout();
+}
 $("toggleHeadlineInsights").onclick = () => {
   const expanded = $("toggleHeadlineInsights").getAttribute("aria-expanded") === "true";
-  $("toggleHeadlineInsights").setAttribute("aria-expanded", String(!expanded));
-  $("toggleHeadlineInsights").textContent = expanded
-    ? "Show insights"
-    : "Hide insights";
-  $("insightMetrics").classList.toggle("hidden", expanded);
-  $("mapInsights").classList.toggle("is-collapsed", expanded);
+  setHeadlineInsightsExpanded(!expanded);
 };
+function setFocusMode(active, restoreButtonFocus = false) {
+  if (active === viewState.focusMode) return;
+  if (active) {
+    viewState.focusRestore = {
+      sidebarCollapsed: viewState.sidebarCollapsed,
+      insightsExpanded:
+        $("toggleHeadlineInsights").getAttribute("aria-expanded") === "true",
+    };
+    viewState.focusMode = true;
+    document.body.classList.add("focus-map-mode");
+    setSidebarCollapsed(true);
+    setHeadlineInsightsExpanded(false);
+  } else {
+    viewState.focusMode = false;
+    document.body.classList.remove("focus-map-mode");
+    const restore = viewState.focusRestore;
+    if (restore) {
+      setSidebarCollapsed(restore.sidebarCollapsed);
+      setHeadlineInsightsExpanded(restore.insightsExpanded);
+    }
+    viewState.focusRestore = null;
+  }
+  $("focusMapButton").textContent = active ? "Exit focus" : "Focus map";
+  $("focusMapButton").setAttribute("aria-pressed", String(active));
+  $("focusMapButton").setAttribute(
+    "aria-label",
+    active ? "Exit focused map view" : "Focus map",
+  );
+  invalidateMapAfterLayout();
+  if (restoreButtonFocus) requestAnimationFrame(() => $("focusMapButton").focus());
+}
+$("focusMapButton").onclick = () => setFocusMode(!viewState.focusMode);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && viewState.focusMode) {
+    event.preventDefault();
+    setFocusMode(false, true);
+  }
+});
 document.querySelector(".map-shell").append($("moreInsightsPanel"));
 function setMoreInsightsPanel(open) {
   $("moreInsightsPanel").classList.toggle("hidden", !open);
