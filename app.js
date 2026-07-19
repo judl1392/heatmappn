@@ -36,6 +36,7 @@ const state = {
       classCount: "6",
       reverse: false,
       centre: "0",
+      initialized: true,
     },
     change: {
       scaleMode: "diverging",
@@ -43,11 +44,13 @@ const state = {
       classCount: "6",
       reverse: false,
       centre: "0",
+      initialized: false,
     },
   },
   activeScalePreference: "raw",
   validation: { invalidRows: [], unmatchedRows: [] },
   statusAffectedRows: [],
+  sampleData: false,
 };
 const $ = (id) => document.getElementById(id);
 const viewState = {
@@ -56,6 +59,21 @@ const viewState = {
   focusRestore: null,
   resizeTimer: null,
 };
+const operationState = {
+  geography: "loading",
+  geographyGeneration: 0,
+  uploadGeneration: 0,
+  uploadBusy: false,
+  sampleBusy: false,
+  buildGeneration: 0,
+  buildRunning: false,
+  buildPending: false,
+  buildMessage: "",
+};
+const SAMPLE_DATA_PATH = "sample/sample-shopify-postcode-data.csv",
+  SAMPLE_DATA_NAME = "sample-shopify-postcode-data.csv",
+  SAMPLE_MAP_TITLE = "Australian ecommerce sales by postcode",
+  SAMPLE_MAP_SUBTITLE = "Synthetic sample data · 2025 net sales";
 const paletteDefinitions = {
   blue: ["#eff6ff", "#3b82f6", "#172554"],
   green: ["#edf3ee", "#66967d", "#163e32"],
@@ -289,20 +307,44 @@ function setSidebarCollapsed(collapsed) {
 $("sidebarToggle").onclick = () =>
   setSidebarCollapsed(!viewState.sidebarCollapsed);
 
-fetch("data/australia-postal-areas.geojson")
-  .then((r) => {
-    if (!r.ok) throw new Error("Boundary file failed to load");
-    return r.json();
-  })
-  .then((g) => {
-    state.geo = g;
+function setGeographyStatus(message, tone = "") {
+  const status = $("geographyStatus");
+  status.textContent = message;
+  status.className = `operation-status${tone ? ` is-${tone}` : ""}`;
+}
+async function loadGeography() {
+  const generation = ++operationState.geographyGeneration;
+  operationState.geography = "loading";
+  $("retryGeography").classList.add("hidden");
+  setGeographyStatus("Loading postcode boundaries…");
+  updateActionStatus();
+  try {
+    const response = await fetch("data/australia-postal-areas.geojson", {
+      cache: "default",
+    });
+    if (!response.ok) throw new Error("GEOGRAPHY_HTTP_ERROR");
+    const geography = await response.json();
+    if (generation !== operationState.geographyGeneration) return;
+    if (!Array.isArray(geography?.features) || !geography.features.length)
+      throw new Error("GEOGRAPHY_INVALID");
+    state.geo = geography;
+    operationState.geography = "ready";
+    $("geographyStatus").classList.add("hidden");
     if (state.rows.length) renderValidation();
-  })
-  .catch(() => {
-    $("fileStatus").classList.remove("hidden");
-    $("fileStatus").textContent =
-      "The postcode boundaries could not be loaded. Please refresh and try again.";
-  });
+  } catch (_error) {
+    if (generation !== operationState.geographyGeneration) return;
+    operationState.geography = "error";
+    setGeographyStatus(
+      "Postcode boundaries could not be loaded. Check your connection, then retry.",
+      "error",
+    );
+    $("retryGeography").classList.remove("hidden");
+  } finally {
+    if (generation === operationState.geographyGeneration) updateActionStatus();
+  }
+}
+$("retryGeography").onclick = loadGeography;
+loadGeography();
 
 const dz = $("dropzone"),
   fi = $("fileInput");
@@ -325,37 +367,266 @@ dz.onkeydown = (e) => {
 dz.addEventListener("drop", (e) => handleFile(e.dataTransfer.files[0]));
 fi.onchange = () => handleFile(fi.files[0]);
 
+function beginIngestion(message) {
+  const generation = ++operationState.uploadGeneration;
+  operationState.uploadBusy = true;
+  operationState.buildGeneration++;
+  operationState.buildPending = false;
+  $("dropzone").setAttribute("aria-busy", "true");
+  setFileOperationStatus(message);
+  updateActionStatus();
+  const current = () => generation === operationState.uploadGeneration,
+    finish = () => {
+      if (!current()) return;
+      operationState.uploadBusy = false;
+      $("dropzone").removeAttribute("aria-busy");
+      updateActionStatus();
+      fi.value = "";
+    };
+  return { generation, current, finish };
+}
 function handleFile(file) {
   if (!file) return;
-  const ext = file.name.split(".").pop().toLowerCase();
+  const operation = beginIngestion("Reading file…"),
+    ext = file.name.split(".").pop().toLowerCase(),
+    { current, finish } = operation;
   if (ext === "csv") {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: "greedy",
-      complete: (r) => {
-        const parsed = normaliseParsedHeaders(r.data, r.meta.fields || []);
-        loadRows(file.name, parsed.rows, parsed.headers, null, parsed.columns);
-      },
-      error: (e) => alert(e.message),
-    });
+    parseCsvSource(file, file.name, operation);
   } else if (["xlsx", "xls"].includes(ext)) {
     const reader = new FileReader();
     reader.onload = (e) => {
+      if (!current()) return;
       try {
+        setFileOperationStatus("Parsing workbook…");
         const wb = XLSX.read(e.target.result, { type: "array", cellDates: true }),
           detected = detectWorkbookTable(wb);
         if (!detected)
           throw new Error("No tabular rows found in the workbook.");
+        if (!current()) return;
         loadRows(file.name, detected.rows, detected.headers, {
           sheetName: detected.sheetName,
           headerRow: detected.headerRow + 1,
         }, detected.columns);
-      } catch (err) {
-        alert("Could not read workbook: " + err.message);
+      } catch (_error) {
+        setFileOperationStatus(
+          "We couldn’t read this Excel file. Try saving it as .xlsx or CSV and upload it again.",
+          "error",
+        );
+      } finally {
+        finish();
       }
     };
+    reader.onerror = () => {
+      if (!current()) return;
+      setFileOperationStatus(
+        "We couldn’t read this Excel file. Try saving it as .xlsx or CSV and upload it again.",
+        "error",
+      );
+      finish();
+    };
+    reader.onabort = finish;
     reader.readAsArrayBuffer(file);
-  } else alert("Please upload a CSV, XLSX or XLS file.");
+  } else {
+    setFileOperationStatus(
+      "This file type isn’t supported. Choose a CSV, XLSX or XLS file.",
+      "error",
+    );
+    finish();
+  }
+}
+
+function parseCsvSource(source, name, operation, sourceOptions = {}) {
+  const { current, finish } = operation;
+  Papa.parse(source, {
+      header: true,
+      skipEmptyLines: "greedy",
+      complete: (r) => {
+        if (!current()) return;
+        try {
+          setFileOperationStatus("Reading CSV data…");
+          const fields = r.meta.fields || [],
+            usable = fields.some(meaningfulHeader) && r.data.some((row) =>
+              Object.values(row).some((value) => !blank(value)),
+            ),
+            warning = csvWarningSummary(r.errors || []);
+          if (!usable) {
+            setFileOperationStatus(
+              warning || "We couldn’t find a usable table in this CSV. Check the header row and upload it again.",
+              "error",
+            );
+            return;
+          }
+          const parsed = normaliseParsedHeaders(r.data, fields);
+          const loaded = loadRows(
+            name,
+            parsed.rows,
+            parsed.headers,
+            null,
+            parsed.columns,
+            warning,
+            sourceOptions,
+          );
+          if (loaded && sourceOptions.onLoaded) sourceOptions.onLoaded();
+        } catch (_error) {
+          setFileOperationStatus(
+            "We couldn’t read this CSV. Check its headers and quoting, then upload it again.",
+            "error",
+          );
+        } finally {
+          finish();
+        }
+      },
+      error: () => {
+        if (!current()) return;
+        setFileOperationStatus(
+          "We couldn’t read this CSV. Try saving it again as UTF-8 CSV and upload it again.",
+          "error",
+        );
+        finish();
+      },
+    });
+}
+
+function setSampleDataState(active) {
+  const wasSample = state.sampleData,
+    indicator = $("sampleDataIndicator");
+  state.sampleData = active;
+  indicator.classList.toggle("hidden", !active);
+  if (active) indicator.classList.remove("is-dismissed");
+  if (!active && wasSample) {
+    if ($("mapTitle").value === SAMPLE_MAP_TITLE)
+      $("mapTitle").value = "Australian postcode heatmap";
+    if ($("mapSubtitle").value === SAMPLE_MAP_SUBTITLE)
+      $("mapSubtitle").value = "";
+  }
+}
+
+function columnKeyForRawHeader(rawHeader) {
+  const expected = rawHeader.trim().toLowerCase();
+  return state.columns.find(
+    (column) =>
+      String(column.rawHeader).replace(/^\uFEFF/, "").trim().toLowerCase() ===
+      expected,
+  )?.key;
+}
+
+function applySampleDefaults() {
+  const postcode = columnKeyForRawHeader("postcode"),
+    primary = columnKeyForRawHeader("net_sales_2025"),
+    comparison = columnKeyForRawHeader("net_sales_2026");
+  if (postcode) $("postcodeColumn").value = postcode;
+  if (primary) $("valueColumn").value = primary;
+  if (comparison) $("comparisonColumn").value = comparison;
+  $("comparisonEnabled").checked = Boolean(comparison);
+  $("mapMode").value = "primary";
+  $("aggregation").value = "sum";
+  $("numberFormat").value = "currency";
+  $("currencySymbol").selectedIndex = 0;
+  $("decimalPlaces").value = "2";
+  state.valueLabelEdited = false;
+  $("valueLabel").value = "";
+  $("mapTitle").value = SAMPLE_MAP_TITLE;
+  $("mapSubtitle").value = SAMPLE_MAP_SUBTITLE;
+  updateComparisonControls();
+  updateFormatControls();
+  recommendScale();
+  renderFilterControls();
+  renderPreview();
+  renderValidation();
+  updatePresentation();
+  updateActionStatus();
+}
+
+let sampleDialogReturnFocus = null;
+function setSampleDialog(open) {
+  const dialog = $("sampleConfirmation");
+  dialog.classList.toggle("hidden", !open);
+  if (open) {
+    sampleDialogReturnFocus = document.activeElement;
+    $("cancelSampleLoad").focus();
+  } else {
+    const returnFocus = sampleDialogReturnFocus;
+    sampleDialogReturnFocus = null;
+    if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
+  }
+}
+
+async function loadEcommerceSample() {
+  if (operationState.sampleBusy) return;
+  operationState.sampleBusy = true;
+  const button = $("sampleDataButton"),
+    operation = beginIngestion("Loading ecommerce sample…");
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  try {
+    const response = await fetch(SAMPLE_DATA_PATH);
+    if (!response.ok) throw new Error("Sample request failed");
+    const csv = await response.text();
+    if (!operation.current()) return;
+    parseCsvSource(csv, SAMPLE_DATA_NAME, operation, {
+      sample: true,
+      onLoaded: applySampleDefaults,
+    });
+  } catch (_error) {
+    if (operation.current()) {
+      setFileOperationStatus(
+        "We couldn’t load the sample data. Refresh the page and try again.",
+        "error",
+      );
+      operation.finish();
+    }
+  } finally {
+    operationState.sampleBusy = false;
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+  }
+}
+
+$("sampleDataButton").onclick = () => {
+  if (operationState.sampleBusy) return;
+  if (state.rows.length && !state.sampleData) setSampleDialog(true);
+  else loadEcommerceSample();
+};
+$("cancelSampleLoad").onclick = () => setSampleDialog(false);
+$("confirmSampleLoad").onclick = () => {
+  setSampleDialog(false);
+  loadEcommerceSample();
+};
+$("dismissSampleDescription").onclick = () =>
+  $("sampleDataIndicator").classList.add("is-dismissed");
+$("sampleConfirmation").addEventListener("click", (event) => {
+  if (event.target === $("sampleConfirmation")) setSampleDialog(false);
+});
+$("sampleConfirmation").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setSampleDialog(false);
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const controls = [$("cancelSampleLoad"), $("confirmSampleLoad")],
+    current = controls.indexOf(document.activeElement),
+    next = event.shiftKey
+      ? (current - 1 + controls.length) % controls.length
+      : (current + 1) % controls.length;
+  event.preventDefault();
+  controls[next].focus();
+});
+
+function setFileOperationStatus(message, tone = "") {
+  const status = $("fileStatus");
+  status.textContent = message;
+  status.className = `file-status${tone ? ` is-${tone}` : ""}`;
+}
+function csvWarningSummary(errors) {
+  if (!errors.length) return "";
+  const first = errors.find((error) => Number.isInteger(error.row)) || errors[0],
+    row = Number.isInteger(first.row) ? ` near row ${first.row + 2}` : "";
+  if (first.code === "MissingQuotes")
+    return `This CSV contains inconsistent quoting${row}. The readable rows were loaded; check that row before relying on the map.`;
+  if (first.code === "TooFewFields" || first.code === "TooManyFields")
+    return `Some CSV rows have a different number of columns${row}. The readable rows were loaded; review the preview and validation summary.`;
+  return `This CSV was loaded with ${errors.length.toLocaleString()} parsing warning${errors.length === 1 ? "" : "s"}${row}. Review the preview before generating the map.`;
 }
 
 const headerTerms = [
@@ -631,14 +902,26 @@ function outputColumnLabel(key) {
 function userFacingRows(rows) {
   return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key.startsWith("col_") ? outputColumnLabel(key) : key === "_reason" ? "Reason" : key === "_row" ? "Source row" : key, value])));
 }
-function loadRows(name, rows, headers, detail = null, columns = null) {
+function loadRows(
+  name,
+  rows,
+  headers,
+  detail = null,
+  columns = null,
+  parsingWarning = "",
+  sourceOptions = {},
+) {
   const populatedHeaders = headers.filter((header) =>
     rows.some((row) => !blank(row[header])),
   );
   if (!populatedHeaders.length) {
-    alert("No populated columns were found in this file.");
-    return;
+    setFileOperationStatus(
+      "This file does not contain any populated columns. Add a header and data rows, then upload it again.",
+      "error",
+    );
+    return false;
   }
+  setSampleDataState(Boolean(sourceOptions.sample));
   state.rows = rows;
   state.filteredRows = rows.slice();
   state.mapGenerated = false;
@@ -670,8 +953,8 @@ function loadRows(name, rows, headers, detail = null, columns = null) {
     ? `<br>Worksheet: ${escapeHtml(detail.sheetName)} · detected header row ${detail.headerRow}`
     : "";
   $("fileStatus").innerHTML =
-    `<strong>${escapeHtml(name)}</strong><br>${rows.length.toLocaleString()} rows found${excelDetail}`;
-  $("fileStatus").classList.remove("hidden");
+    `<strong>${escapeHtml(name)}</strong><br>${rows.length.toLocaleString()} rows found${excelDetail}${parsingWarning ? `<br><span>${escapeHtml(parsingWarning)}</span>` : ""}`;
+  $("fileStatus").className = `file-status${parsingWarning ? " is-warning" : ""}`;
   fillSelect($("postcodeColumn"), populatedHeaders, rows);
   fillSelect($("valueColumn"), populatedHeaders, rows);
   fillSelect($("comparisonColumn"), populatedHeaders, rows);
@@ -705,6 +988,7 @@ function loadRows(name, rows, headers, detail = null, columns = null) {
   renderPreview();
   renderValidation();
   updatePresentation();
+  return true;
 }
 function fillSelect(sel, headers, rows) {
   sel.innerHTML = headers
@@ -934,11 +1218,35 @@ function inferColumnType(key, rows = state.rows) {
     name = normalisedHeader(key),
     postcodeRate = values.filter((value) => cleanPostcode(value) !== null).length / denominator,
     numericRate = values.filter((value) => numeric(value) !== null).length / denominator,
-    dateRate = values.filter((value) => /[\/-]/.test(String(value)) && Number.isFinite(Date.parse(value))).length / denominator;
+    dateRate = values.filter(isRecognisedDateValue).length / denominator;
   if (/(postcode|post code|postal area|\bpoa\b|\bzip\b)/.test(name) && postcodeRate >= 0.5) return "postcode";
   if (key === $("valueColumn").value || (comparisonEnabled() && key === $("comparisonColumn").value) || numericRate >= 0.8) return "numeric";
   if (dateRate >= 0.9) return "date";
   return "text";
+}
+function validCalendarDate(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+function isRecognisedDateValue(value) {
+  if (value instanceof Date) return Number.isFinite(value.getTime());
+  const text = String(value ?? "").trim();
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match)
+    return validCalendarDate(Number(match[1]), Number(match[2]), Number(match[3]));
+  match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return false;
+  const first = Number(match[1]),
+    second = Number(match[2]),
+    year = Number(match[3]);
+  if (first > 31 || second > 31 || (first > 12 && second > 12)) return false;
+  if (first > 12) return validCalendarDate(year, second, first);
+  if (second > 12) return validCalendarDate(year, first, second);
+  return validCalendarDate(year, second, first);
 }
 function typeLabel(type) {
   return ({ postcode: "Postcode", numeric: "Numeric", text: "Text", date: "Date" })[type] || "Text";
@@ -1323,6 +1631,7 @@ function saveScalePreference(group = state.activeScalePreference) {
     classCount: $("classCount").value,
     reverse: $("reversePalette").checked,
     centre: $("divergingCentre").value,
+    initialized: true,
   };
 }
 function applyScalePreferenceForMode() {
@@ -1330,11 +1639,17 @@ function applyScalePreferenceForMode() {
   const group = scalePreferenceGroup(),
     preference = state.scalePreferences[group];
   state.activeScalePreference = group;
-  $("scaleMode").value = group === "change" ? "diverging" : preference.scaleMode;
-  $("paletteMode").value = group === "change" ? "blue-red" : preference.palette;
+  if (!preference.initialized) {
+    preference.scaleMode = "diverging";
+    preference.palette = "blue-red";
+    preference.centre = "0";
+    preference.initialized = true;
+  }
+  $("scaleMode").value = preference.scaleMode;
+  $("paletteMode").value = preference.palette;
   $("classCount").value = preference.classCount;
   $("reversePalette").checked = preference.reverse;
-  $("divergingCentre").value = group === "change" ? "0" : preference.centre;
+  $("divergingCentre").value = preference.centre;
   updateScaleControls();
 }
 function updateScaleControls(values = selectedNumericValues()) {
@@ -1562,10 +1877,25 @@ function renderValidation() {
 
 function updateActionStatus() {
   const result = state.validation,
-    usable = state.mapGenerated ? state.values.size : result?.mappedRows || 0;
-  $("buildButton").disabled = !usable;
+    usable = state.mapGenerated ? state.values.size : result?.mappedRows || 0,
+    geographyReady = operationState.geography === "ready";
+  $("buildButton").disabled =
+    !usable ||
+    !geographyReady ||
+    operationState.uploadBusy ||
+    operationState.buildRunning;
   $("buildButton").textContent = state.mapGenerated ? "Update map" : "Generate map";
-  $("actionStatus").textContent = !usable
+  $("actionStatus").textContent = operationState.uploadBusy
+    ? "Reading uploaded data…"
+    : operationState.buildRunning
+      ? operationState.buildMessage || (state.mapGenerated ? "Updating map…" : "Preparing map…")
+      : operationState.geography === "loading"
+        ? "Loading postcode boundaries…"
+        : operationState.geography === "error"
+          ? "Postcode boundaries unavailable"
+          : operationState.buildMessage
+            ? operationState.buildMessage
+            : !usable
     ? state.activeFilters.length && !analysisRows().length
       ? "No rows match current filters"
       : "No usable rows"
@@ -1837,7 +2167,6 @@ function clearMappedDisplay(message) {
     state.layer = null;
   }
   $("legend").classList.add("hidden");
-  $("summary").classList.add("hidden");
   $("mapInsights").classList.add("hidden");
   $("pinnedDetail").classList.add("hidden");
   $("exportButton").disabled = true;
@@ -1849,10 +2178,54 @@ function clearMappedDisplay(message) {
   updateActionStatus();
 }
 function buildMap() {
-  if (!state.geo)
-    return alert(
-      "The postcode boundaries are still loading. Please try again.",
-    );
+  operationState.buildGeneration++;
+  operationState.buildPending = true;
+  operationState.buildMessage = "";
+  void runMapBuildQueue();
+}
+async function runMapBuildQueue() {
+  if (operationState.buildRunning) return;
+  operationState.buildRunning = true;
+  $("exportButton").disabled = true;
+  try {
+    while (operationState.buildPending) {
+      operationState.buildPending = false;
+      const generation = operationState.buildGeneration;
+      operationState.buildMessage = state.mapGenerated
+        ? "Updating map…"
+        : "Preparing map…";
+      updateActionStatus();
+      await nextFrame();
+      await nextFrame();
+      if (
+        generation !== operationState.buildGeneration ||
+        operationState.uploadBusy
+      )
+        continue;
+      try {
+        performMapBuild();
+      } catch (_error) {
+        operationState.buildMessage =
+          "The map could not be updated. Check the selected columns and try again.";
+      }
+    }
+  } finally {
+    operationState.buildRunning = false;
+    if (
+      operationState.buildMessage === "Preparing map…" ||
+      operationState.buildMessage === "Updating map…"
+    )
+      operationState.buildMessage = "";
+    $("exportButton").disabled = !state.mapGenerated || !state.values.size;
+    updateActionStatus();
+  }
+}
+function performMapBuild() {
+  if (!state.geo || operationState.geography !== "ready") {
+    operationState.buildMessage =
+      "Postcode boundaries are still loading. Please wait a moment and try again.";
+    return;
+  }
   const pc = $("postcodeColumn").value,
     val = $("valueColumn").value,
     agg = $("aggregation").value,
@@ -1905,16 +2278,17 @@ function buildMap() {
   const nums = [...values.values()].sort((a, b) => a - b);
   if (!nums.length) {
     clearMappedDisplay("No usable rows are available for this map view.");
-    return alert(
+    operationState.buildMessage =
       activeMapMode() === "percentage" && state.comparisonReadiness?.zeroPrimary
-        ? "Percentage change is unavailable because no compared postcode has a non-zero primary value."
-        : "No valid postcode and value pairs were found for this map mode. Please check the selected columns and comparison summary.",
-    );
+        ? "Percentage change is unavailable because every compared baseline is zero."
+        : "No usable postcode and value pairs were found. Check the selected columns and comparison summary.";
+    return;
   }
-  if (!updateScaleControls(nums))
-    return alert(
-      "The selected scale cannot be used with these values. Please choose another scale.",
-    );
+  if (!updateScaleControls(nums)) {
+    operationState.buildMessage =
+      "The selected scale cannot be used with these values. Choose another scale and try again.";
+    return;
+  }
   const scaleMode = $("scaleMode").value,
     centre = Number($("divergingCentre").value),
     classCount = scaleMode === "continuous" ? 9 : Number($("classCount").value);
@@ -1984,6 +2358,7 @@ function buildMap() {
   renderLegend();
   renderSummary();
   renderPinnedDetail();
+  operationState.buildMessage = "";
 }
 $("aggregation").onchange = () => {
   updateComparisonControls();
@@ -1993,18 +2368,12 @@ $("aggregation").onchange = () => {
 function scaleControlsChanged(event) {
   const group = scalePreferenceGroup();
   if (event.target.id === "scaleMode") {
-    if (group === "change") $("scaleMode").value = "diverging";
-    if (group === "raw" && $("scaleMode").value === "diverging")
-      $("scaleMode").value = "quantile";
     if ($("scaleMode").value === "diverging")
       $("paletteMode").value = "blue-red";
     else if ($("paletteMode").value === "blue-red")
       $("paletteMode").value = "green";
   }
   if (event.target.id === "paletteMode") {
-    if (group === "change") $("paletteMode").value = "blue-red";
-    if (group === "raw" && $("paletteMode").value === "blue-red")
-      $("paletteMode").value = "green";
     if ($("paletteMode").value === "blue-red")
       $("scaleMode").value = "diverging";
     else if ($("scaleMode").value === "diverging")

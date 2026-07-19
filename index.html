@@ -12,14 +12,14 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="mark">▦</span><span>Postcode Heatmap</span><span class="beta">AU</span></div>
-    <a class="sample-link" href="sample/sample-postcode-revenue.csv" download>Download sample CSV</a>
+    <a class="sample-link" href="sample/sample-postcode-revenue.csv" download>Download CSV template</a>
   </header>
 
   <main>
     <section class="hero">
       <p class="eyebrow">FREE • PRIVATE • NO SIGN-UP</p>
       <h1>Turn postcode data into a map.</h1>
-      <p class="subhead">Upload a CSV or Excel file. Your data stays in your browser.</p>
+      <p class="subhead">Upload a CSV or Excel file. Uploaded data stays in your browser.</p>
     </section>
 
     <section class="workspace" id="workspace">
@@ -30,7 +30,11 @@
           <button class="workflow-toggle" type="button" aria-expanded="true" aria-controls="dataSectionBody"><span>Data</span><small>Upload and columns</small></button>
           <div id="dataSectionBody" class="workflow-body">
             <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Upload CSV or Excel file"><input id="fileInput" type="file" accept=".csv,.xlsx,.xls" hidden /><div class="upload-icon">⇧</div><strong>Drop your file here</strong><span>or click to browse</span><small>CSV, XLSX or XLS</small></div>
-            <div id="fileStatus" class="file-status hidden"></div>
+            <div class="sample-entry"><button id="sampleDataButton" type="button" aria-describedby="sampleDataHelp">Try ecommerce sample</button><small id="sampleDataHelp">Synthetic Shopify-style data · 1,800 rows · 450 postcodes</small></div>
+            <div id="geographyStatus" class="operation-status" role="status" aria-live="polite">Loading postcode boundaries…</div>
+            <button id="retryGeography" class="hidden" type="button">Retry postcode boundaries</button>
+            <div id="fileStatus" class="file-status hidden" role="status" aria-live="polite"></div>
+            <aside id="sampleDataIndicator" class="sample-data-indicator hidden" aria-label="Sample data status"><div><span class="sample-badge">Sample data</span><button id="dismissSampleDescription" type="button" aria-label="Dismiss sample data description">×</button></div><p><strong>Synthetic ecommerce sample</strong><br />1,800 rows across 450 Australian postcodes. No real customer or order data.</p><a href="sample/sample-shopify-postcode-data.csv" download>Download ecommerce sample</a></aside>
             <div id="mappingControls" class="mapping hidden"><label>Postcode column<select id="postcodeColumn"></select></label><label>Primary value column<select id="valueColumn"></select></label><label class="toggle-label"><input id="comparisonEnabled" type="checkbox" /> Compare with another column</label><label id="comparisonColumnField" class="hidden">Comparison value column<select id="comparisonColumn"></select></label><label id="mapModeField" class="hidden">Map view<select id="mapMode"><option value="primary">Primary value</option><option value="comparison">Comparison value</option><option value="absolute">Absolute change</option><option value="percentage">Percentage change</option></select><small class="field-help">Change is calculated as comparison minus primary. The primary column is the baseline.</small></label><label>How should duplicate postcodes be combined?<select id="aggregation"><option value="sum" selected>Sum</option><option value="avg">Average</option><option value="count">Count of valid rows</option><option value="min">Minimum</option><option value="max">Maximum</option></select><small id="aggregationHelp" class="field-help">Rows with the same postcode will be combined using this method.</small></label></div>
           </div>
         </section>
@@ -85,6 +89,8 @@
   </main>
 
   <footer>Uses ABS Postal Areas 2021. Postal Areas approximate postcodes and are intended for statistical use.</footer>
+
+  <div id="sampleConfirmation" class="dialog-backdrop hidden"><section class="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="sampleConfirmationTitle" aria-describedby="sampleConfirmationText"><h2 id="sampleConfirmationTitle">Load ecommerce sample?</h2><p id="sampleConfirmationText">Loading the sample will replace the current dataset.</p><div><button id="cancelSampleLoad" type="button">Cancel</button><button id="confirmSampleLoad" class="primary" type="button">Load sample</button></div></section></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>

@@ -1,6 +1,6 @@
 # Postcode Heatmap Australia
 
-A browser-only prototype that turns postcode/value data into an interactive Australian Postal Area heatmap.
+A browser-only app that turns postcode/value data into an interactive Australian Postal Area heatmap.
 
 ## Run locally
 
@@ -24,17 +24,19 @@ Then visit `http://localhost:8000`.
 Upload this folder as a static site. No build command is required.
 
 ## Supported files
-- CSV
-- XLSX / XLS (first worksheet)
+- CSV with a header row
+- XLSX / XLS; the app inspects the first 30 rows of each worksheet and selects the most likely table header
 
 ## Required data
 - A postcode column
 - A numeric value column
 
-Duplicate postcodes can be summed, averaged, counted, or reduced to their maximum. Data is processed locally in the user's browser and is not uploaded to a server.
+Duplicate postcodes can be summed, averaged, counted, or reduced to their minimum or maximum. CSV and Excel contents are processed locally in the user's browser and are not uploaded to a server.
+
+The optional synthetic ecommerce sample is downloaded as a static file from this app. Loading it does not change how user-uploaded files are processed.
 
 ## Geography
 Uses ABS Postal Areas 2021 (`POA_CODE21`). Postal Areas are statistical approximations of postcodes. Boundary geometry was simplified for browser performance.
 
-## Important production note
-This prototype loads JavaScript libraries and OpenStreetMap tiles from public CDNs. For a more robust production release, pin and self-host dependencies, add a privacy notice, and test export behavior across browsers.
+## Network access
+The app loads its JavaScript libraries and optional map tiles from public CDNs. Uploaded rows, column names and filter selections remain in browser memory and are not included in those requests.
