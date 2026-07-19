@@ -29,13 +29,6 @@ const paletteDefinitions = {
   "blue-red": ["#2166ac", "#f7f7f7", "#b2182b"],
   colourblind: ["#0072b2", "#f7f7f7", "#d55e00"],
 };
-const noDataStyle = {
-  fillColor: "#dfe3e1",
-  fillOpacity: 0.22,
-  color: "#a3ada8",
-  opacity: 0.55,
-  weight: 0.4,
-};
 const map = L.map("map", {
   zoomControl: true,
   attributionControl: true,
@@ -58,17 +51,72 @@ const streetMap = L.tileLayer(
   },
 );
 const noBasemap = L.layerGroup();
-L.control
-  .layers(
-    {
-      "Light map": lightMap,
-      "Standard street map": streetMap,
-      "No basemap": noBasemap,
-    },
-    null,
-    { position: "topright", collapsed: false },
-  )
-  .addTo(map);
+const basemaps = { light: lightMap, streets: streetMap, none: noBasemap };
+let basemapTileError = false;
+[lightMap, streetMap].forEach((layer) => {
+  layer.on("loading", () => {
+    basemapTileError = false;
+    $("appearanceWarning").textContent = "";
+  });
+  layer.on("tileerror", () => {
+    basemapTileError = true;
+    $("appearanceWarning").textContent =
+      "Some basemap tiles could not be loaded. They may also be missing from PNG exports.";
+  });
+});
+
+function appearanceSettings() {
+  return {
+    fillOpacity: Number($("fillOpacity").value),
+    boundaryOpacity: Number($("boundaryOpacity").value),
+    boundaryWidth: Number($("boundaryWidth").value),
+    borders: $("postcodeBorders").checked,
+  };
+}
+function postcodeStyle(feature) {
+  const appearance = appearanceSettings(),
+    value = state.values.get(String(feature.properties.POA_CODE21));
+  return {
+    fillColor: colour(value),
+    fillOpacity: appearance.fillOpacity,
+    color: "#74827c",
+    opacity: appearance.borders ? appearance.boundaryOpacity : 0,
+    weight: appearance.borders ? appearance.boundaryWidth : 0,
+  };
+}
+function noDataStyle() {
+  const appearance = appearanceSettings();
+  return {
+    fillColor: "#dfe3e1",
+    fillOpacity: Math.min(0.22, appearance.fillOpacity * 0.35),
+    color: "#a3ada8",
+    opacity: appearance.borders ? appearance.boundaryOpacity * 0.75 : 0,
+    weight: appearance.borders
+      ? Math.min(appearance.boundaryWidth, 0.5)
+      : 0,
+  };
+}
+function applyAppearance() {
+  $("fillOpacityValue").textContent =
+    `${Math.round(Number($("fillOpacity").value) * 100)}%`;
+  $("boundaryOpacityValue").textContent =
+    `${Math.round(Number($("boundaryOpacity").value) * 100)}%`;
+  if (state.noDataLayer) state.noDataLayer.setStyle(noDataStyle());
+  if (state.layer) state.layer.setStyle(postcodeStyle);
+}
+function selectBasemap() {
+  Object.values(basemaps).forEach((layer) => map.removeLayer(layer));
+  basemaps[$("basemapMode").value].addTo(map);
+  basemapTileError = false;
+  $("appearanceWarning").textContent = "";
+}
+["fillOpacity", "boundaryOpacity"].forEach((id) =>
+  $(id).addEventListener("input", applyAppearance),
+);
+["boundaryWidth", "postcodeBorders"].forEach(
+  (id) => ($(id).onchange = applyAppearance),
+);
+$("basemapMode").onchange = selectBasemap;
 
 fetch("data/australia-postal-areas.geojson")
   .then((r) => {
@@ -794,21 +842,12 @@ function buildMap() {
   state.noDataLayer = L.geoJSON(state.geo, {
     renderer: L.svg({ padding: 0.5 }),
     interactive: false,
-    style: noDataStyle,
+    style: noDataStyle(),
   }).addTo(map);
   state.layer = L.geoJSON(state.geo, {
     renderer: L.svg({ padding: 0.5 }),
     filter: (f) => values.has(String(f.properties.POA_CODE21)),
-    style: (f) => {
-      const v = values.get(String(f.properties.POA_CODE21));
-      return {
-        fillColor: colour(v),
-        fillOpacity: 0.62,
-        color: "#74827c",
-        opacity: 0.7,
-        weight: 0.5,
-      };
-    },
+    style: postcodeStyle,
     onEachFeature: (f, l) => {
       const p = String(f.properties.POA_CODE21),
         v = values.get(p);
@@ -821,10 +860,13 @@ function buildMap() {
       l.on({
         mouseover: (e) =>
           e.target.setStyle({
-            weight: 1.25,
+            weight: Math.max(1.1, appearanceSettings().boundaryWidth + 0.6),
             color: "#4f5f58",
             opacity: 0.9,
-            fillOpacity: 0.74,
+            fillOpacity: Math.min(
+              0.88,
+              appearanceSettings().fillOpacity + 0.12,
+            ),
           }),
         mouseout: (e) => state.layer.resetStyle(e.target),
         click: () => {
@@ -1081,6 +1123,8 @@ $("exportButton").onclick = async () => {
   button.disabled = true;
   try {
     await prepareMapForExport();
+    if ($("basemapMode").value !== "none" && basemapTileError)
+      throw new Error("BASEMAP_TILES_UNAVAILABLE");
     const liveCard = document.querySelector(".map-card"),
       liveOverlay = liveCard.querySelector(".leaflet-overlay-pane"),
       livePaths = liveOverlay?.querySelectorAll("svg path").length || 0,
@@ -1131,8 +1175,16 @@ $("exportButton").onclick = async () => {
       ),
     );
     downloadBlob(blob, "postcode-heatmap.png");
-  } catch {
-    alert("The map export could not be created. Please try again.");
+  } catch (error) {
+    if ($("basemapMode").value !== "none") {
+      $("appearanceWarning").textContent =
+        "The selected basemap could not be included reliably because some map tiles were unavailable or blocked by browser security.";
+      alert(
+        "The PNG could not be created reliably with the selected basemap. Map tile providers and browser security can sometimes block image capture. Try again after the tiles load, or select No basemap.",
+      );
+    } else {
+      alert("The map export could not be created. Please try again.");
+    }
   } finally {
     if (exportStage) exportStage.remove();
     overlayUrls.forEach((url) => URL.revokeObjectURL(url));

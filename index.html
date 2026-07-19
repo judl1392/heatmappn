@@ -61,6 +61,14 @@
             <label>Value label<input id="valueLabel" value="" placeholder="Uses selected value column" /></label>
             <label>Source note<input id="sourceNote" value="" placeholder="Optional" /></label>
           </fieldset>
+          <fieldset class="appearance-controls"><legend>Map appearance</legend>
+            <label>Fill opacity <output id="fillOpacityValue">62%</output><input id="fillOpacity" type="range" min="0" max="1" step="0.05" value="0.62" /></label>
+            <label>Boundary opacity <output id="boundaryOpacityValue">70%</output><input id="boundaryOpacity" type="range" min="0" max="1" step="0.05" value="0.7" /></label>
+            <label>Boundary width<select id="boundaryWidth"><option value="0.4">Thin</option><option value="0.5" selected>Regular</option><option value="0.75">Medium</option><option value="1">Wide</option></select></label>
+            <label class="toggle-label"><input id="postcodeBorders" type="checkbox" checked /> Show postcode borders</label>
+            <label>Basemap<select id="basemapMode"><option value="light" selected>Light</option><option value="streets">Standard streets</option><option value="none">No basemap</option></select></label>
+            <small id="appearanceWarning" class="field-help appearance-warning" aria-live="polite"></small>
+          </fieldset>
           <section id="dataPreview" class="data-preview" aria-labelledby="previewTitle">
             <div class="preview-heading"><strong id="previewTitle">Data preview</strong><span>First 10 parsed rows</span></div>
             <div id="previewDetection" class="preview-detection"></div>
